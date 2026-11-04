@@ -3,6 +3,10 @@ id = "jade"
 version = "26.3.5"
 priority = 100
 
+# The Horizon commit this bundle was built and tested on.
+[compatibility]
+horizon_revision = "c9d474dd9116e84c243f8992d75c11314df56f06"
+
 # Jade (snownee.jade, Jade-mc26.3-Fabric-26.3.5): the look-at overlay and its plugin registry.
 [[module]]
 id = "jade"
