@@ -73,3 +73,60 @@ bindings = [
   { name = "mod_id", ty = "&str", value = "mod_id" },
   { name = "button", ty = "usize", value = "button" },
 ]
+
+# Boss Bar Overlap's Hide Boss Bar.
+[[injection]]
+id = "hide-boss-bars"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::game::dragon::Game<'_>::draw_boss_bars"
+helper = "hide_boss_bars.rs"
+bindings = [
+  { name = "game", ty = "&Game<'_>", value = "&*self" },
+]
+
+# Mod Name on Item Tooltip.
+[[injection]]
+id = "item-mod-name"
+kind = "RETURN"
+target = "horizon_client::game::stations::Game<'_>::stack_tooltip"
+helper = "item_mod_name.rs"
+bindings = [
+  { name = "game", ty = "&Game<'_>", value = "&*self" },
+  { name = "stack", ty = "&ItemStack", value = "stack" },
+  { name = "lines", ty = "Vec<(horizon_client::text::Text, u32)>", value = "$value" },
+]
+
+# /jadec and /jade.
+[[injection]]
+id = "jade-command"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_command"
+helper = "jade_command.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "command", ty = "&str", value = "command" },
+  { name = "ran", ty = "&mut bool", value = "&mut *ran" },
+]
+
+[[injection]]
+id = "jade-perform-command"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_perform_command"
+helper = "jade_perform_command.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "player", ty = "&crate::game::native_server::NativeServerPlayer", value = "player" },
+  { name = "command", ty = "&str", value = "command" },
+  { name = "ran", ty = "&mut bool", value = "&mut *ran" },
+]
+
+[[injection]]
+id = "jade-register-commands"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_register_commands"
+helper = "jade_register_commands.rs"
+bindings = [
+  { name = "commands", ty = "&mut Vec<crate::game::native_server::NativeCommand>", value = "&mut *commands" },
+]
+

@@ -7,15 +7,21 @@ settings under Options > Mods, and its keys.
 ## What differs from Jade
 
 Rewritten in Rust for Horizon's hooks, so no original code runs. Other mods register with this port's own provider
-functions, not Jade's Java API. Not ported: themes, alpha and text background, profiles, the ignore list, boss bar
-overlap, TTS modes, perspective mode, reach distance, display item position, animation, flip main hand, item mod name,
-most plugin sub-options (harvest tool, storage styles and amounts), relative coordinates, some block properties
-(explosion resistance, jump, speed, ignite, burn), the sniffer's dig cooldown, and accessibility-only providers.
+functions, not Jade's Java API. Themes, opacity, text background, profiles, the ignore lists, boss bar overlap,
+TTS, perspective mode, reach, icon positions, the `/jade` and `/jadec` commands, the item mod name and the plugin
+sub-options are ported. These still differ:
+
+- Themes are drawn with solid fills in the theme's colours, not Jade's sprites.
+- The position adjust screen is a setting you cycle through, not a screen you drag on.
+- The sniffer's dig cooldown isn't shown (Horizon's client has no such value).
+- Energy Storage has nothing to show: Horizon has no shared energy API for other mods.
+- Access variant and NPC details are approximate.
+- Dedicated servers: Horizon doesn't build native mods for them, so "server" here means a LAN host.
 
 ## Build
 
 This is a [Horizon](https://github.com/horizon-rust/horizon) native mod bundle: Rust mixins compiled into the game.
-It was built and tested on Horizon commit `c9d474d` (Minecraft 26.3, native hooks API 80), as `native-c9d474d-fafa5c3981b4`.
+It was built and tested on Horizon commit `c9d474d` (Minecraft 26.3, native hooks API 80), as `native-c9d474d-f8565186de6e`.
 Native mods are unsandboxed code that runs with your rights, so read what you build.
 
 Put each bundle's `mixins/<id>` folder in one folder, then:

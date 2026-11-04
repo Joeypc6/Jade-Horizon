@@ -17,6 +17,7 @@ const NET_REQUEST: &str = "jade:request";
 const NET_DATA: &str = "jade:data";
 
 /// What the player looks at.
+#[derive(Clone, Debug)]
 pub enum Target {
     Block { pos: [i32; 3], block: String },
     Mob { index: usize },
@@ -27,12 +28,17 @@ pub enum Target {
     Item { index: usize },
     /// A falling block (FallingBlockProvider), by its index in the game's list.
     Falling { index: usize },
+    /// A chest minecart or chest boat and such (ContainerEntityProvider), by its index.
+    Cart { index: usize },
+    Boat { index: usize },
 }
 
 /// One of a line's elements (JadeUI.text, item, smallItem, progressArrow, a progress bar, HealthElement,
 /// ArmorElement, spacer).
 #[derive(Clone, Debug)]
 pub enum El {
+    /// Text at three quarters (Mod Name: Smaller).
+    Small(String),
     Text(String),
     Item { id: String, count: u32, small: bool },
     Arrow(f32),
@@ -73,7 +79,7 @@ pub fn encode(line: &Line) -> String {
         .els
         .iter()
         .map(|e| match e {
-            El::Text(t) => t.replace(['\u{1}', '\u{1f}', '\n'], " "),
+            El::Text(t) | El::Small(t) => t.replace(['\u{1}', '\u{1f}', '\n'], " "),
             El::Item { id, count, small } => format!("\u{1}i {id} {count} {}", u8::from(*small)),
             El::Arrow(f) => format!("\u{1}a {f}"),
             El::Bar { frac, color, text } => format!("\u{1}b {frac} {color} {text}"),
@@ -152,8 +158,231 @@ pub fn register_server(f: ServerProvider) {
     }
 }
 
+/// One of Jade's settings: the file it is kept in, its label, its default and its values with their labels.
+struct Opt {
+    key: &'static str,
+    label: &'static str,
+    default: &'static str,
+    values: &'static [(&'static str, &'static str)],
+}
+
+const ONOFF: &[(&str, &str)] = &[("true", "On"), ("false", "Off")];
+const fn on_by_default(key: &'static str, label: &'static str) -> Opt {
+    Opt { key, label, default: "true", values: ONOFF }
+}
+const fn off_by_default(key: &'static str, label: &'static str) -> Opt {
+    Opt { key, label, default: "false", values: ONOFF }
+}
+
+/// WailaConfig and the plugin options, in the order of Jade's settings screen.
+const OPTIONS: &[Opt] = &[
+    on_by_default("display_tooltip", "Enabled"),
+    Opt { key: "display_mode", label: "Display Mode", default: "toggle", values: &[("toggle", "Toggle"), ("hold", "Hold"), ("lite", "Lite")] },
+    on_by_default("display_blocks", "Display Blocks"),
+    on_by_default("display_entities", "Display Entities"),
+    on_by_default("display_bosses", "Display Bosses"),
+    Opt { key: "display_fluids", label: "Display Fluids", default: "none", values: &[("none", "None"), ("any", "Any"), ("fallback", "Fallback")] },
+    on_by_default("hide_from_tab_list", "Hide from Player List"),
+    on_by_default("hide_from_guis", "Hide from GUIs"),
+    Opt { key: "boss_bar_overlap", label: "Boss Bar Overlap", default: "push", values: &[("none", "No Operation"), ("hide_bar", "Hide Boss Bar"), ("hide_tip", "Hide Tooltip"), ("push", "Push Down Tooltip")] },
+    Opt { key: "display_item", label: "Icon Position", default: "top", values: &[("hide", "Hide"), ("top", "Top"), ("centered", "Centered"), ("inline", "In-line")] },
+    Opt { key: "tts_mode", label: "Text to Speech Mode", default: "press", values: &[("press", "Press"), ("toggle", "Toggle")] },
+    Opt { key: "perspective_mode", label: "Perspective Mode", default: "camera", values: &[("camera", "From Camera"), ("eye", "From Eye")] },
+    Opt { key: "reach_distance", label: "Extended Reach", default: "0", values: &[("0", "Off"), ("5", "5"), ("10", "10"), ("15", "15"), ("20", "20")] },
+    on_by_default("item_mod_name", "Mod Name on Item Tooltip"),
+    Opt { key: "overlay_x", label: "Overlay Position X", default: "center", values: &[("left", "Left"), ("center", "Center"), ("right", "Right")] },
+    Opt { key: "position", label: "Overlay Position Y", default: "0", values: &[("0", "Top"), ("1", "Upper"), ("2", "Middle"), ("3", "Bottom")] },
+    Opt { key: "scale", label: "Display Scale", default: "1", values: &[("0.5", "0.5"), ("0.75", "0.75"), ("1", "1"), ("1.25", "1.25"), ("1.5", "1.5")] },
+    Opt { key: "text_background_opacity", label: "Text Background Opacity", default: "0", values: &[("0", "0%"), ("25", "25%"), ("50", "50%"), ("75", "75%"), ("100", "100%")] },
+    off_by_default("flip_main_hand", "Flip Position with Main Hand"),
+    Opt { key: "overlay_alpha", label: "Background Opacity", default: "70", values: &[("0", "0%"), ("25", "25%"), ("50", "50%"), ("70", "70%"), ("85", "85%"), ("100", "100%")] },
+    Opt { key: "overlay_theme", label: "Theme", default: "dark", values: &[("dark", "Dark"), ("waila", "WAILA"), ("create", "Create"), ("top", "TOP")] },
+    Opt { key: "theme_style", label: "Theme Style", default: "default", values: &[("default", "Default"), ("slim", "Slim")] },
+    on_by_default("animation", "Overlay Animation"),
+    off_by_default("narrate_keys", "Narrate Key Binds"),
+    off_by_default("enable_profiles", "Profiles Enabled"),
+    Opt { key: "profile", label: "Profile", default: "0", values: &[("0", "#0"), ("1", "#1"), ("2", "#2"), ("3", "#3")] },
+    off_by_default("debug_mode", "Debug Mode"),
+    // Core Features.
+    on_by_default("object_name", "Target Name"),
+    on_by_default("mod_name", "Mod Name"),
+    off_by_default("mod_name_smaller", "Mod Name: Smaller"),
+    on_by_default("mod_name_translated", "Translate Mod Name"),
+    off_by_default("distance", "Distance"),
+    off_by_default("coordinates", "Coordinates"),
+    off_by_default("coordinates_rel", "Relative Coordinates"),
+    off_by_default("block_face", "Block Face"),
+    Opt { key: "registry_name", label: "Registry Name", default: "false", values: &[("false", "Off"), ("true", "On"), ("advanced", "Advanced Tooltips")] },
+    off_by_default("registry_special", "Special IDs"),
+    off_by_default("block_states", "Block States"),
+    off_by_default("block_properties", "Block Properties"),
+    off_by_default("loot_table", "Loot Table"),
+    // Minecraft - Entity.
+    on_by_default("entity_health", "Entity Health"),
+    Opt { key: "health_max", label: "Max Health for Render", default: "40", values: &[("20", "20"), ("40", "40"), ("60", "60"), ("100", "100")] },
+    Opt { key: "health_per_line", label: "Icons per Line", default: "10", values: &[("5", "5"), ("10", "10"), ("15", "15"), ("20", "20")] },
+    off_by_default("health_fractions", "Show Fractions"),
+    on_by_default("entity_armor", "Entity Armor"),
+    Opt { key: "armor_max", label: "Max Armors for Render", default: "20", values: &[("10", "10"), ("20", "20"), ("40", "40")] },
+    on_by_default("entity_stats", "Horse Stats"),
+    on_by_default("potion_effects", "Entity Effects"),
+    Opt { key: "effects_limit", label: "Effects Limit", default: "5", values: &[("1", "1"), ("3", "3"), ("5", "5"), ("10", "10"), ("99", "No limit")] },
+    on_by_default("item_frame", "Item Frame"),
+    on_by_default("container_entity", "Container Entity"),
+    on_by_default("mob_growth", "Mob Growth"),
+    on_by_default("mob_breeding", "Mob Breeding"),
+    on_by_default("armor_stand", "Armor Stand"),
+    on_by_default("painting", "Painting"),
+    on_by_default("next_entity_drop", "Next Entity Drop"),
+    on_by_default("animal_owner", "Animal Owner"),
+    on_by_default("sulfur_cube", "Sulfur Cube"),
+    on_by_default("villager_profession", "Villager Profession"),
+    off_by_default("villager_restock", "Villager Restock"),
+    on_by_default("zombie_villager", "Zombie Villager Conversion"),
+    on_by_default("pet_armor", "Pet Armor"),
+    Opt { key: "pet_armor_mode", label: "Pet Armor Shows", default: "damageable", values: &[("damageable", "Show Damageable"), ("all", "Show All")] },
+    on_by_default("item_tooltip", "Item Description"),
+    // Minecraft - Block.
+    on_by_default("breaking_progress", "Breaking Progress"),
+    on_by_default("harvest_tool", "Harvest Tool"),
+    off_by_default("harvest_new_line", "Harvest Tool: Start in New Line"),
+    on_by_default("harvest_effective", "Harvest Tool: Effective Tool"),
+    off_by_default("harvest_unbreakable", "Harvest Tool: Show \"Unbreakable\""),
+    off_by_default("harvest_creative", "Harvest Tool: Show in Creative Mode"),
+    on_by_default("brewing_stand", "Brewing Stand"),
+    on_by_default("tnt_stability", "TNT Stability"),
+    on_by_default("beehive", "Beehive"),
+    on_by_default("note_block", "Note Block"),
+    on_by_default("command_block", "Command Block"),
+    on_by_default("enchantment_power", "Enchantment Power"),
+    on_by_default("total_enchantment_power", "Total Enchantment Power"),
+    on_by_default("player_head", "Player Head"),
+    on_by_default("item_storage", "Item Storage"),
+    Opt { key: "storage_detailed", label: "Item Storage: Detailed Amount", default: "54", values: &[("27", "27"), ("54", "54"), ("108", "108")] },
+    Opt { key: "storage_normal", label: "Item Storage: Normal Amount", default: "9", values: &[("0", "0"), ("9", "9"), ("18", "18"), ("27", "27"), ("54", "54")] },
+    Opt { key: "storage_names", label: "Item Storage: Show Name Threshold", default: "4", values: &[("0", "0"), ("2", "2"), ("4", "4"), ("9", "9")] },
+    Opt { key: "storage_per_line", label: "Item Storage: Items per Line", default: "9", values: &[("5", "5"), ("9", "9"), ("12", "12")] },
+    off_by_default("storage_sort", "Item Storage: Sort by Count"),
+    on_by_default("energy_storage", "Energy Storage"),
+    off_by_default("energy_detailed", "Energy Storage: Detailed-Only"),
+    on_by_default("fluid_storage", "Fluid Storage"),
+    off_by_default("fluid_detailed", "Fluid Storage: Detailed-Only"),
+    Opt { key: "fluid_style", label: "Fluid Storage: Display Style", default: "bar", values: &[("bar", "Progress Bar"), ("plain", "Plain Text"), ("icon", "Icon")] },
+    on_by_default("lectern", "Lectern"),
+    on_by_default("furnace", "Furnace Contents"),
+    on_by_default("mob_spawner", "Mob Spawner"),
+    on_by_default("crop_progress", "Crop Progress"),
+    on_by_default("redstone", "Redstone Info"),
+    on_by_default("jukebox", "Jukebox Record"),
+    on_by_default("shelf", "Shelf"),
+    off_by_default("waxed", "Waxed State"),
+    // Accessibility.
+    off_by_default("always_list_mode", "Always Use List Mode"),
+    off_by_default("access_sign", "Sign Content"),
+    off_by_default("access_block", "Block Details"),
+    off_by_default("access_entity", "Entity Details"),
+    off_by_default("access_variant", "Entity Variant"),
+    off_by_default("access_held", "Entity Held Item"),
+    off_by_default("access_npc", "NPC Description"),
+];
+
+/// Bumped when a setting changes, for every thread's copy.
+static SETTINGS_EPOCH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+thread_local! {
+    static VALUES: RefCell<(u32, std::collections::HashMap<&'static str, String>)> = RefCell::new((u32::MAX, std::collections::HashMap::new()));
+    static IGNORED: RefCell<(u32, std::collections::HashSet<String>, std::collections::HashSet<String>)> = RefCell::new((u32::MAX, Default::default(), Default::default()));
+    /// Block Properties' fire numbers (the game's own block behaviours), read when first asked for.
+    static BEHAVIOURS: RefCell<Option<serde_json::Value>> = const { RefCell::new(None) };
+}
+
+/// A setting's value now.
+pub fn opt(game: &Game<'_>, key: &'static str) -> String {
+    let epoch = SETTINGS_EPOCH.load(std::sync::atomic::Ordering::Relaxed);
+    VALUES.with_borrow_mut(|(at, values)| {
+        if *at != epoch {
+            *at = epoch;
+            values.clear();
+            for o in OPTIONS {
+                values.insert(o.key, game.native_setting(ID, o.key).unwrap_or_else(|| o.default.to_owned()));
+            }
+            // config/jade/server-plugin-overrides.json (`/jadec generate_server_overrides`) wins.
+            let overrides = Game::native_config_dir().ok().and_then(|d| std::fs::read_to_string(d.join("jade/server-plugin-overrides.json")).ok()).and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok());
+            if let Some(map) = overrides.as_ref().and_then(|v| v.as_object()) {
+                for o in OPTIONS {
+                    if let Some(v) = map.get(o.key).and_then(|v| v.as_str()) {
+                        values.insert(o.key, v.to_owned());
+                    }
+                }
+            }
+        }
+        values.get(key).cloned().unwrap_or_default()
+    })
+}
+
+pub fn on(game: &Game<'_>, key: &'static str) -> bool {
+    let epoch = SETTINGS_EPOCH.load(std::sync::atomic::Ordering::Relaxed);
+    // The common case without a copy: the overlay asks for many each frame.
+    let quick = VALUES.with_borrow(|(at, values)| if *at == epoch { values.get(key).map(|v| v != "false") } else { None });
+    quick.unwrap_or_else(|| opt(game, key) != "false")
+}
+
+fn num(game: &Game<'_>, key: &'static str) -> f64 {
+    opt(game, key).parse().unwrap_or(0.0)
+}
+
+/// `config/jade/hide-blocks.json` and `hide-entities.json`: `{"values": ["minecraft:barrier", "#tag"]}`, as Jade's.
+fn ignore_files() -> Option<[std::path::PathBuf; 2]> {
+    let dir = Game::native_config_dir().ok()?.join("jade");
+    let _ = std::fs::create_dir_all(&dir);
+    let files = [dir.join("hide-blocks.json"), dir.join("hide-entities.json")];
+    let defaults = ["{\n  \"values\": [\n    \"minecraft:barrier\",\n    \"minecraft:light\",\n    \"minecraft:structure_void\"\n  ]\n}\n", "{\n  \"values\": [\n    \"minecraft:area_effect_cloud\",\n    \"minecraft:firework_rocket\",\n    \"minecraft:interaction\",\n    \"minecraft:text_display\",\n    \"minecraft:lightning_bolt\"\n  ]\n}\n"];
+    for (f, d) in files.iter().zip(defaults) {
+        if !f.exists() {
+            let _ = std::fs::write(f, d);
+        }
+    }
+    Some(files)
+}
+
+fn ignored(game: &Game<'_>, block: Option<&str>, entity: Option<&str>) -> bool {
+    let epoch = SETTINGS_EPOCH.load(std::sync::atomic::Ordering::Relaxed);
+    IGNORED.with_borrow_mut(|(at, blocks, entities)| {
+        if *at != epoch {
+            *at = epoch;
+            blocks.clear();
+            entities.clear();
+            if let Some(files) = ignore_files() {
+                let read = |f: &std::path::Path| -> Vec<String> {
+                    std::fs::read_to_string(f).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).and_then(|v| Some(v.get("values")?.as_array()?.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect())).unwrap_or_default()
+                };
+                blocks.extend(read(&files[0]));
+                entities.extend(read(&files[1]));
+            }
+        }
+        if let Some(b) = block
+            && (blocks.contains(b) || blocks.iter().any(|t| t.strip_prefix('#').is_some_and(|tag| game.res.items().block_in_tag(tag, b))))
+        {
+            return true;
+        }
+        entity.is_some_and(|e| entities.contains(e))
+    })
+}
+
 #[derive(Default)]
 struct Client {
+    /// Fading in (Overlay Animation): how far along, and when it was last drawn.
+    fade: f32,
+    fade_at: Option<std::time::Instant>,
+    /// The overlay was drawn this frame (Boss Bar Overlap: Hide Boss Bar).
+    showing: bool,
+    /// `/jadec pin`: this target stays on the box.
+    pinned: Option<Target>,
+    /// Text to Speech Mode Toggle: reads each new target out.
+    tts_on: bool,
+    tts_last: String,
+    /// A line to say for a key (Narrate Key Binds).
+    say: Option<String>,
     /// Where the crosshair meets the block it is on.
     hit_point: [f64; 3],
     /// The server's lines for a block, and when they came.
@@ -259,8 +488,37 @@ pub fn seconds(ticks: i64) -> String {
 /// What the player looks at: the nearer of the block and the mob under the crosshair (fluids only with Toggle
 /// Fluid on).
 fn target(game: &Game<'_>) -> Option<Target> {
-    let liquids = CLIENT.with_borrow(|c| c.liquids);
-    let block = game.native_view_hit().filter(|(d, _)| *d <= 5.0);
+    let fluids_mode = opt(game, "display_fluids");
+    let liquids = fluids_mode != "none" || CLIENT.with_borrow(|c| c.liquids);
+    if !on(game, "display_tooltip") {
+        return None;
+    }
+    // Extended Reach, and Perspective Mode's camera: the block on the crosshair from there.
+    let extra = num(game, "reach_distance");
+    let block_reach = if extra > 0.0 { extra } else { 5.0 };
+    let camera_ray = opt(game, "perspective_mode") == "camera" && !game.camera_type.first_person();
+    let mut block = game.native_view_hit().filter(|(d, _)| f64::from(*d) <= block_reach);
+    if camera_ray
+        && let Some((eye, dir)) = game.aim()
+    {
+        let (origin, look) = match game.camera_type {
+            crate::game::perspective::CameraType::ThirdPersonFront => ([eye[0] + dir[0] * 4.0, eye[1] + dir[1] * 4.0, eye[2] + dir[2] * 4.0], [-dir[0], -dir[1], -dir[2]]),
+            _ => ([eye[0] - dir[0] * 4.0, eye[1] - dir[1] * 4.0, eye[2] - dir[2] * 4.0], dir),
+        };
+        if let (Some(hit), Some((d, mut base))) = (game.clip_ray(origin, look, block_reach + 4.0), game.native_view_hit()) {
+            base.block_x = hit.pos[0];
+            base.block_y = hit.pos[1];
+            base.block_z = hit.pos[2];
+            base.x = hit.point[0];
+            base.y = hit.point[1];
+            base.z = hit.point[2];
+            let id = game.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
+            if let Some(state) = game.pack.assets.registry.state(id) {
+                base.block = state.name.to_string();
+            }
+            block = Some((d, base));
+        }
+    }
     if let Some((_, hit)) = &block {
         CLIENT.with_borrow_mut(|c| c.hit_point = [hit.x, hit.y, hit.z]);
     }
@@ -289,10 +547,40 @@ fn target(game: &Game<'_>) -> Option<Target> {
     if let Some((i, d)) = falling_hit(game) {
         offer(d, Target::Falling { index: i });
     }
+    if let Some((i, d)) = game.cart_hit() {
+        offer(d, Target::Cart { index: i });
+    }
+    if let Some((i, d)) = game.boat_hit() {
+        offer(d, Target::Boat { index: i });
+    }
+    // Extended Reach: mobs past the hand's reach.
+    if extra > 0.0
+        && let Some((eye, dir)) = game.aim()
+    {
+        for (i, m) in game.mobs.iter().enumerate() {
+            let (hw, h) = (f64::from(m.kind.width) / 2.0, f64::from(m.kind.height));
+            let lo = [m.position.x - hw, m.position.y, m.position.z - hw];
+            let hi = [m.position.x + hw, m.position.y + h, m.position.z + hw];
+            if let Some(t) = ray_box(eye, dir, lo, hi, extra) {
+                offer(t, Target::Mob { index: i });
+            }
+        }
+    }
     let is_fluid = |b: &str| matches!(b, "minecraft:water" | "minecraft:lava");
     let cfg = config(game);
-    let block = block.filter(|_| cfg.blocks);
+    let block = block.filter(|(_, hit)| cfg.blocks && !ignored(game, Some(&hit.block), None));
     let entity = entity.filter(|_| cfg.entities);
+    let entity = entity.filter(|(_, t)| {
+        let id = match t {
+            Target::Mob { index } => game.mobs.get(*index).map(|m| m.kind.id.to_string()),
+            Target::Painting { .. } => Some("minecraft:painting".to_owned()),
+            Target::Item { .. } => Some("minecraft:item".to_owned()),
+            Target::Stand { .. } => Some("minecraft:armor_stand".to_owned()),
+            Target::Cart { index } => game.carts.get(*index).map(|c| c.kind.id().to_owned()),
+            _ => None,
+        };
+        !id.is_some_and(|id| ignored(game, None, Some(&id)))
+    });
     let entity = entity.filter(|(_, t)| {
         cfg.bosses || !matches!(t, Target::Mob { index } if game.mobs.get(*index).is_some_and(|m| matches!(m.kind.id.as_ref(), "minecraft:ender_dragon" | "minecraft:wither")))
     });
@@ -304,6 +592,26 @@ fn target(game: &Game<'_>) -> Option<Target> {
         }
         _ => None,
     }
+}
+
+/// Where a ray enters a box, within `reach`.
+fn ray_box(eye: [f64; 3], dir: [f64; 3], lo: [f64; 3], hi: [f64; 3], reach: f64) -> Option<f64> {
+    let (mut t0, mut t1) = (0.0f64, reach);
+    for a in 0..3 {
+        if dir[a].abs() < 1e-9 {
+            if eye[a] < lo[a] || eye[a] > hi[a] {
+                return None;
+            }
+            continue;
+        }
+        let (mut ta, mut tb) = ((lo[a] - eye[a]) / dir[a], (hi[a] - eye[a]) / dir[a]);
+        if ta > tb {
+            std::mem::swap(&mut ta, &mut tb);
+        }
+        t0 = t0.max(ta);
+        t1 = t1.min(tb);
+    }
+    (t0 <= t1).then_some(t0)
 }
 
 /// The falling block under the crosshair (its whole-block box) within reach, and its distance.
@@ -372,7 +680,17 @@ fn harvest_tool(game: &Game<'_>, pos: [i32; 3], block: &str) -> Option<Vec<El>> 
     let tools = [("pickaxe", "minecraft:wooden_pickaxe"), ("axe", "minecraft:wooden_axe"), ("shovel", "minecraft:wooden_shovel"), ("hoe", "minecraft:wooden_hoe"), ("sword", "minecraft:wooden_sword")];
     let state = game.world.block(pos[0], pos[1], pos[2]);
     let facts = game.res.facts().get(state);
+    if game.creative && !on(game, "harvest_creative") {
+        return None;
+    }
+    if facts.hardness < 0.0 {
+        return on(game, "harvest_unbreakable").then(|| vec![El::Text("§cUnbreakable".to_owned())]);
+    }
     let (_, icon) = tools.iter().find(|(n, _)| items.block_in_tag(&format!("minecraft:mineable/{n}"), block))?;
+    // Effective Tool: a tool that only mines faster, not one the block needs.
+    if !facts.requires_tool && !on(game, "harvest_effective") {
+        return None;
+    }
     let ok = !facts.requires_tool || items.correct_for_drops(game.held(), block);
     Some(vec![El::Item { id: (*icon).to_owned(), count: 1, small: true }, El::Text(if ok { "§a✔".to_owned() } else { "§c✕".to_owned() })])
 }
@@ -388,7 +706,7 @@ fn vanilla(game: &Game<'_>, t: &Target, details: bool, lines: &mut Vec<Line>) {
             let prop = |k: &str| state.properties.get(k).cloned();
             let reg = &game.pack.assets.registry;
             // CropProgressProvider: crops, stems, sweet berries, nether wart, cocoa (their `age`).
-            if let Some(age) = prop("age").and_then(|a| a.parse::<u32>().ok()) {
+            if let Some(age) = prop("age").and_then(|a| a.parse::<u32>().ok()).filter(|_| on(game, "crop_progress")) {
                 let most = reg.property_values(block, "age").iter().filter_map(|v| v.parse::<u32>().ok()).max().unwrap_or(7).max(1);
                 let crop = block.ends_with("_crop") || matches!(block.as_str(), "minecraft:wheat" | "minecraft:carrots" | "minecraft:potatoes" | "minecraft:beetroots"
                     | "minecraft:melon_stem" | "minecraft:pumpkin_stem" | "minecraft:sweet_berry_bush" | "minecraft:nether_wart" | "minecraft:cocoa"
@@ -398,24 +716,25 @@ fn vanilla(game: &Game<'_>, t: &Target, details: bool, lines: &mut Vec<Line>) {
                 }
             }
             // RedstoneProvider: a lever's state, a repeater's delay, a comparator's mode, redstone power.
-            if block == "minecraft:lever" {
+            let redstone = on(game, "redstone");
+            if redstone && block == "minecraft:lever" {
                 let on = prop("powered").as_deref() == Some("true");
                 lines.push(Line::text(format!("State: {}", if on { "§aOn" } else { "§cOff" })));
             }
-            if block == "minecraft:repeater" {
+            if redstone && block == "minecraft:repeater" {
                 lines.push(Line::text(format!("Delay: §f{}", prop("delay").unwrap_or_default())));
             }
-            if block == "minecraft:comparator" {
+            if redstone && block == "minecraft:comparator" {
                 let m = if prop("mode").as_deref() == Some("subtract") { "Subtractor" } else { "Comparator" };
                 lines.push(Line::text(format!("Mode: §f{m}")));
             }
-            if let Some(power) = prop("power")
+            if let Some(power) = prop("power").filter(|_| redstone)
                 && block != "minecraft:comparator"
             {
                 lines.push(Line::text(format!("Power: §c{power}")));
             }
             // NoteBlockProvider: the instrument and the note.
-            if block == "minecraft:note_block" {
+            if block == "minecraft:note_block" && on(game, "note_block") {
                 let inst = prop("instrument").unwrap_or_default();
                 let name = match inst.as_str() {
                     "basedrum" => "Bass Drum", "snare" => "Snare Drum", "hat" => "Clicks and Sticks", "bass" => "Bass", "flute" => "Flute",
@@ -430,19 +749,39 @@ fn vanilla(game: &Game<'_>, t: &Target, details: bool, lines: &mut Vec<Line>) {
                 lines.push(Line::text(format!("§f{name} - {}{octave}", NOTES[note % 12])));
             }
             // TNTStabilityProvider.
-            if block == "minecraft:tnt" && prop("unstable").as_deref() == Some("true") {
+            if block == "minecraft:tnt" && prop("unstable").as_deref() == Some("true") && on(game, "tnt_stability") {
                 lines.push(Line::text("§cUnstable"));
             }
             // BeehiveProvider.Client: the honey level.
-            if let Some(h) = prop("honey_level") {
+            if let Some(h) = prop("honey_level").filter(|_| on(game, "beehive")) {
                 lines.push(Line::text(format!("Honey: §f{h} / 5")));
             }
             // EnchantmentPowerProvider: a bookshelf counts one for an enchanting table.
-            if matches!(block.as_str(), "minecraft:bookshelf" | "minecraft:chiseled_bookshelf") && details {
+            if matches!(block.as_str(), "minecraft:bookshelf" | "minecraft:chiseled_bookshelf") && details && on(game, "enchantment_power") {
                 lines.push(Line::text("Ench Power: §f1"));
             }
             // TotalEnchantmentPowerProvider: the bookshelves an enchanting table reads.
-            if block == "minecraft:enchanting_table" {
+            // WaxedProvider: copper that won't weather.
+            if block.starts_with("minecraft:waxed_") && on(game, "waxed") {
+                lines.push(Line::text("§6Waxed"));
+            }
+            // SignContentProvider: what a sign says, front then back.
+            if on(game, "access_sign")
+                && let Some(horizon_client::containers::BlockEntity::Sign(sign)) = game.world.block_entities.get(&(pos[0], pos[1], pos[2]))
+            {
+                for line in sign.front.lines.iter().chain(sign.back.lines.iter()).filter(|l| !l.is_empty()) {
+                    lines.push(Line::text(format!("§f{line}")));
+                }
+            }
+            // BlockDetailsProvider: the state's properties in words.
+            if on(game, "access_block") {
+                let mut props: Vec<String> = state.properties.iter().map(|(k, v)| format!("{k} {v}")).collect();
+                props.sort();
+                if !props.is_empty() {
+                    lines.push(Line::text(format!("§7{}", props.join(", "))));
+                }
+            }
+            if block == "minecraft:enchanting_table" && on(game, "total_enchantment_power") {
                 let mut power = 0;
                 for dx in -2..=2i32 {
                     for dz in -2..=2i32 {
@@ -467,14 +806,37 @@ fn vanilla(game: &Game<'_>, t: &Target, details: bool, lines: &mut Vec<Line>) {
             if !matches!(kind, "minecraft:armor_stand" | "minecraft:creaking") {
                 // The mob's own max_health attribute (a horse rolls its own).
                 let max = m.attrs.max_health.max(1.0);
-                let mut l = Line::new().with(El::Hearts { health: m.health.max(0.0), max, absorb: 0.0 });
-                if m.kind.armor > 0.0 {
-                    l = l.with(El::Space(4.0)).with(El::Armor(m.kind.armor));
+                let mut l = Line::new();
+                if on(game, "entity_health") {
+                    l = l.with(El::Hearts { health: m.health.max(0.0), max, absorb: 0.0 });
                 }
-                lines.push(l);
+                if m.kind.armor > 0.0 && on(game, "entity_armor") {
+                    if !l.els.is_empty() {
+                        l = l.with(El::Space(4.0));
+                    }
+                    l = l.with(El::Armor(m.kind.armor));
+                }
+                if !l.els.is_empty() {
+                    lines.push(l);
+                }
+            }
+            // The accessibility plugin: the mob's variant and what it holds, in words.
+            if on(game, "access_variant") && m.extra.variant != 0 {
+                lines.push(Line::text(format!("Variant: §f{}", m.extra.variant)));
+            }
+            if on(game, "access_held")
+                && let Some(held) = m.extra.main_hand.as_deref()
+            {
+                lines.push(Line::text(format!("Holding: §f{}", item_name(game, held))));
+            }
+            if on(game, "access_entity") {
+                lines.push(Line::text(format!("§7{:.1} tall, {:.1} wide", m.kind.height, m.kind.width)));
+            }
+            if on(game, "access_npc") && matches!(kind, "minecraft:villager" | "minecraft:wandering_trader") {
+                lines.push(Line::text("§7Trades with players"));
             }
             // VillagerProfessionProvider: the profession, and its level for one with a job.
-            if matches!(kind, "minecraft:villager" | "minecraft:zombie_villager") {
+            if matches!(kind, "minecraft:villager" | "minecraft:zombie_villager") && on(game, "villager_profession") {
                 const PROFESSIONS: [&str; 15] = ["none", "armorer", "butcher", "cartographer", "cleric", "farmer", "fisherman", "fletcher",
                     "leatherworker", "librarian", "mason", "nitwit", "shepherd", "toolsmith", "weaponsmith"];
                 let prof = PROFESSIONS[m.extra.variant2 as usize % PROFESSIONS.len()];
@@ -487,13 +849,16 @@ fn vanilla(game: &Game<'_>, t: &Target, details: bool, lines: &mut Vec<Line>) {
                 lines.push(Line::text(format!("§f{text}")));
             }
             // PetArmorProvider: a wolf's body armour. SulfurCubeProvider: what a sulfur cube swallowed.
-            if matches!(kind, "minecraft:wolf" | "minecraft:sulfur_cube")
+            if (kind == "minecraft:wolf" && on(game, "pet_armor") || kind == "minecraft:sulfur_cube" && on(game, "sulfur_cube"))
                 && let Some(armor) = m.extra.head.as_deref()
+                // "Show Damageable" leaves out what wears no armour bar.
+                && (kind != "minecraft:wolf" || opt(game, "pet_armor_mode") != "damageable" || armor.ends_with("_armor"))
             {
                 lines.push(Line::new().with(Line::small(armor)).with(El::Text(format!("§f{}", item_name(game, armor)))));
             }
             // StatusEffectsProvider: each effect and its time, by category (good green, bad red).
-            for (id, ticks, amp) in m.extra.effects.iter().filter(|_| config(game).effects) {
+            let limit = num(game, "effects_limit") as usize;
+            for (id, ticks, amp) in m.extra.effects.iter().filter(|_| config(game).effects).take(limit) {
                 let short = id.trim_start_matches("minecraft:");
                 let mut name = game.translate(&format!("effect.minecraft.{short}"), short);
                 if (1..=9).contains(amp) {
@@ -508,7 +873,7 @@ fn vanilla(game: &Game<'_>, t: &Target, details: bool, lines: &mut Vec<Line>) {
                 lines.push(Line::text(format!("{color}{name} ({time})")));
             }
             // AnimalOwnerProvider: a tamed animal's owner (a player in the world, or the uuid).
-            if let Some(owner) = m.extra.owner {
+            if let Some(owner) = m.extra.owner.filter(|_| on(game, "animal_owner")) {
                 let uuid = ((owner[0] as u32 as u128) << 96) | ((owner[1] as u32 as u128) << 64) | ((owner[2] as u32 as u128) << 32) | (owner[3] as u32 as u128);
                 let name = game.native_server_players().into_iter().find(|p| p.uuid == uuid).map(|p| p.name).unwrap_or_else(|| format!("{uuid:032x}"));
                 lines.push(Line::text(format!("Owner: §f{name}")));
@@ -516,14 +881,14 @@ fn vanilla(game: &Game<'_>, t: &Target, details: bool, lines: &mut Vec<Line>) {
         }
         // ItemFrameProvider: the framed item's name.
         Target::Frame { index } => {
-            if let Some(stack) = game.item_frames.get(*index).and_then(|f| f.item.as_ref()) {
+            if let Some(stack) = game.item_frames.get(*index).and_then(|f| f.item.as_ref()).filter(|_| on(game, "item_frame")) {
                 let name = game.stack_tooltip(stack).first().map_or_else(|| stack.item.to_string(), |(t, _)| t.plain());
                 lines.push(Line::text(format!("§f{name}")));
             }
         }
         // PaintingProvider: the variant's title (yellow) and author (grey).
         Target::Painting { index } => {
-            if let Some(p) = game.paintings.get(*index) {
+            if let Some(p) = game.paintings.get(*index).filter(|_| on(game, "painting")) {
                 let (ns, v) = p.variant.split_once(':').unwrap_or(("minecraft", &p.variant));
                 let title = game.translate(&format!("painting.{ns}.{v}.title"), "");
                 let author = game.translate(&format!("painting.{ns}.{v}.author"), "");
@@ -537,7 +902,7 @@ fn vanilla(game: &Game<'_>, t: &Target, details: bool, lines: &mut Vec<Line>) {
         }
         // ArmorStandProvider: each worn or held item, small, with its name.
         Target::Stand { index } => {
-            if let Some(a) = game.armor_stands.get(*index) {
+            if let Some(a) = game.armor_stands.get(*index).filter(|_| on(game, "armor_stand")) {
                 for stack in a.equipment.iter().rev().flatten() {
                     let name = game.stack_tooltip(stack).first().map_or_else(|| stack.item.to_string(), |(t, _)| t.plain());
                     lines.push(Line::new().with(Line::small(&stack.item)).with(El::Text(format!("§f{name}"))));
@@ -545,14 +910,47 @@ fn vanilla(game: &Game<'_>, t: &Target, details: bool, lines: &mut Vec<Line>) {
             }
         }
         Target::Falling { .. } => {}
+        // ContainerEntityProvider: what a chest minecart or boat holds.
+        Target::Cart { index } => {
+            if let Some(c) = game.carts.get(*index).filter(|_| on(game, "container_entity")) {
+                container_lines(c.items.iter().flatten(), lines);
+            }
+        }
+        Target::Boat { index } => {
+            if let Some(b) = game.boats.get(*index).filter(|b| b.chest && on(game, "container_entity")) {
+                container_lines(b.items.iter().flatten(), lines);
+            }
+        }
         // ItemTooltipProvider: the dropped stack's tooltip under its name.
         Target::Item { index } => {
-            if let Some(e) = game.dropped.get(*index) {
-                for (t, _) in game.stack_tooltip(&e.stack).into_iter().skip(1) {
+            if let Some(e) = game.dropped.get(*index).filter(|_| on(game, "item_tooltip")) {
+                let mut tip = game.stack_tooltip(&e.stack);
+                if on(game, "item_mod_name") {
+                    tip.pop();
+                }
+                for (t, _) in tip.into_iter().skip(1) {
                     lines.push(Line::text(format!("§7{}", t.plain())));
                 }
             }
         }
+    }
+}
+
+/// A vehicle's stacks, the same items together, nine to a row.
+fn container_lines<'a>(stacks: impl Iterator<Item = &'a ItemStack>, lines: &mut Vec<Line>) {
+    let mut merged: Vec<(String, u32)> = Vec::new();
+    for s in stacks {
+        match merged.iter_mut().find(|(id, _)| *id == *s.item) {
+            Some(e) => e.1 += s.count,
+            None => merged.push((s.item.to_string(), s.count)),
+        }
+    }
+    for row in merged.chunks(9).take(6) {
+        let mut l = Line::new();
+        for (id, n) in row {
+            l = l.with(Line::item(id, *n));
+        }
+        lines.push(l);
     }
 }
 
@@ -590,6 +988,10 @@ fn info_lines(game: &Game<'_>, t: &Target, cfg: &Config, lines: &mut Vec<Line>) 
         && let Some((pos, _)) = block
     {
         lines.push(Line::text(format!("§7{} {} {}", pos[0], pos[1], pos[2])));
+        if on(game, "coordinates_rel") {
+            let e = [eye[0].floor() as i32, eye[1].floor() as i32, eye[2].floor() as i32];
+            lines.push(Line::text(format!("§7~{} ~{} ~{}", pos[0] - e[0], pos[1] - e[1], pos[2] - e[2])));
+        }
     }
     if cfg.distance {
         let at = match t {
@@ -614,12 +1016,56 @@ fn info_lines(game: &Game<'_>, t: &Target, cfg: &Config, lines: &mut Vec<Line>) 
             }
         }
         if cfg.block_properties {
-            lines.push(Line::text(format!("Destroy time: §f{}", trim2(f64::from(game.res.facts().get(id).hardness)))));
+            let facts = game.res.facts().get(id);
+            lines.push(Line::text(format!("Destroy time: §f{}", trim2(f64::from(facts.hardness)))));
+            lines.push(Line::text(format!("Explosion resistance: §f{}", trim2(f64::from(facts.explosion_resistance)))));
+            lines.push(Line::text(format!("Friction: §f{}", trim2(f64::from(facts.friction)))));
+            // Block.speedFactor and jumpFactor: the blocks that differ.
+            let (speed, jump) = match name {
+                "minecraft:soul_sand" => (0.4, 1.0),
+                "minecraft:honey_block" => (0.4, 0.5),
+                _ => (1.0, 1.0),
+            };
+            lines.push(Line::text(format!("Speed factor: §f{}", trim2(speed))));
+            lines.push(Line::text(format!("Jump factor: §f{}", trim2(jump))));
+            let fire = |odds: &str| -> Option<i64> {
+                BEHAVIOURS.with_borrow_mut(|b| {
+                    let v = b.get_or_insert_with(|| {
+                        std::fs::read_to_string(game.options.resources.join("block-behaviours.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(serde_json::Value::Null)
+                    });
+                    v.get("fire")?.get(odds)?.get(name)?.as_i64()
+                })
+            };
+            if let Some(n) = fire("igniteOdds") {
+                lines.push(Line::text(format!("Ignite odds: §f{n}")));
+            }
+            if let Some(n) = fire("burnOdds") {
+                lines.push(Line::text(format!("Burn odds: §f{n}")));
+            }
         }
-        if cfg.registry_name {
+        if on(game, "loot_table") {
+            let (ns, path) = name.split_once(':').unwrap_or(("minecraft", name));
+            lines.push(Line::text(format!("§7Loot table: {ns}:blocks/{path}")));
+        }
+        // Advanced Tooltips: only with the game's F3+H on.
+        let show = match opt(game, "registry_name").as_str() {
+            "advanced" => game.settings.file.bool("advancedItemTooltips"),
+            "false" => false,
+            _ => true,
+        };
+        if show {
             lines.push(Line::text(format!("§8{name}")));
         }
-    } else if cfg.registry_name
+        if on(game, "registry_special") {
+            let facts = game.res.facts().get(id);
+            if facts.block_entity {
+                lines.push(Line::text(format!("§8BlockEntity: {name}")));
+            }
+            if name.ends_with(":water") || name.ends_with(":lava") {
+                lines.push(Line::text(format!("§8Fluid: {name}")));
+            }
+        }
+    } else if opt(game, "registry_name") != "false"
         && let Target::Mob { index } = t
         && let Some(m) = game.mobs.get(*index)
     {
@@ -661,31 +1107,32 @@ fn vanilla_server(game: &mut Game<'_>, pos: [i32; 3], block: &str, details: bool
     match be {
         // FurnaceProvider: input, fuel, the progress arrow, output.
         Be::Furnace(f) => {
-            if f.items.iter().any(Option::is_some) {
+            if f.items.iter().any(Option::is_some) && on(game, "furnace") {
                 let frac = if f.cooking_total == 0 { 0.0 } else { f.cooking_timer as f32 / f.cooking_total as f32 };
                 let l = Line::new().with(item(&f.items[0])).with(item(&f.items[1])).with(El::Arrow(frac)).with(item(&f.items[2]));
                 lines.push(encode(&l));
             }
         }
         // BrewingStandProvider: the blaze powder left and the time to brew.
+        Be::Brewing(_) if !on(game, "brewing_stand") => {}
         Be::Brewing(b) => {
             let mut l = Line::new().with(Line::small("minecraft:blaze_powder")).with(El::Text(format!("§f{}", b.fuel)));
             if b.brew_time > 0 {
                 l = l.with(El::Space(5.0)).with(Line::small("minecraft:clock")).with(El::Text(format!("§f{}", seconds(i64::from(b.brew_time)))));
             }
             lines.push(encode(&l));
-            storage(lines, b.items.iter().flatten());
+            storage(game, details, lines, b.items.iter().flatten());
         }
         // ItemStorageProvider: what a container holds, in rows of nine.
         Be::Chest(items) => {
             if block == "minecraft:hopper" && game.native_block_property(pos, "enabled").as_deref() == Some("false") {
                 lines.push("§cInventory is locked".to_owned());
             }
-            storage(lines, items.iter().flatten());
+            storage(game, details, lines, items.iter().flatten());
         }
-        Be::Crafter(c) => storage(lines, c.items.iter().flatten()),
-        Be::Shelf(s) => storage(lines, s.items.iter().flatten()),
-        Be::ChiseledBookshelf(s) => storage(lines, s.items.iter().flatten()),
+        Be::Crafter(c) => storage(game, details, lines, c.items.iter().flatten()),
+        Be::Shelf(s) if on(game, "shelf") => storage(game, details, lines, s.items.iter().flatten()),
+        Be::ChiseledBookshelf(s) if on(game, "shelf") => storage(game, details, lines, s.items.iter().flatten()),
         // CampfireProvider: what cooks, and how far along.
         Be::Campfire(c) => {
             let mut l = Line::new();
@@ -702,6 +1149,7 @@ fn vanilla_server(game: &mut Game<'_>, pos: [i32; 3], block: &str, details: bool
             }
         }
         // JukeboxProvider: the record.
+        Be::Jukebox(_) if !on(game, "jukebox") => {}
         Be::Jukebox(j) => {
             if let Some(r) = j.record() {
                 let name = item_name(game, &r.item);
@@ -711,22 +1159,22 @@ fn vanilla_server(game: &mut Game<'_>, pos: [i32; 3], block: &str, details: bool
             }
         }
         // LecternProvider: the book.
-        Be::Lectern(l) => {
+        Be::Lectern(l) if on(game, "lectern") => {
             if let Some(b) = &l.book {
                 let name = item_name(game, &b.item);
                 lines.push(encode(&Line::new().with(Line::small(&b.item)).with(El::Text(format!("§f{name}")))));
             }
         }
         // BeehiveProvider: the bees inside.
-        Be::Beehive(h) => lines.push(format!("Bees: §f{} / 3", h.bees.len())),
+        Be::Beehive(h) if on(game, "beehive") => lines.push(format!("Bees: §f{} / 3", h.bees.len())),
         // CommandBlockProvider: its command.
-        Be::CommandBlock(c) => {
+        Be::CommandBlock(c) if on(game, "command_block") => {
             if !c.command.is_empty() {
                 lines.push(format!("§f{}", c.command));
             }
         }
         // MobSpawnerProvider: what it spawns (the first potential's entity) and the delay.
-        Be::Spawner(s) => {
+        Be::Spawner(s) if on(game, "mob_spawner") => {
             let id = s.potentials.first().and_then(|(d, _)| match d.entity.get(&horizon_world::nbt::JavaString::from("id")) {
                 Some(horizon_world::nbt::Tag::String(t)) => t.to_string().ok(),
                 _ => None,
@@ -744,16 +1192,16 @@ fn vanilla_server(game: &mut Game<'_>, pos: [i32; 3], block: &str, details: bool
             let mut seen = Vec::new();
             for face in horizon_core::geometry::Direction::ALL {
                 for t in game.native_fluid_tanks(&dim, pos, face).unwrap_or_default() {
-                    if !seen.contains(&t.tank) {
+                    if !seen.contains(&t.tank) && (details || !on(game, "fluid_detailed")) {
                         seen.push(t.tank);
                         let name = t.fluid.as_deref().map(|f| fluid_name(game, f));
-                        lines.push(fluid_line(name.as_deref(), t.fluid.as_deref(), t.amount, t.capacity, details));
+                        lines.push(fluid_line_styled(game, name.as_deref(), t.fluid.as_deref(), t.amount, t.capacity, details));
                     }
                 }
             }
         }
         // MobSpawnerCooldownProvider: a trial spawner's cooldown.
-        Be::TrialSpawner(t) => {
+        Be::TrialSpawner(t) if on(game, "mob_spawner") => {
             let now = game.world.game_time;
             if t.cooldown_ends_at > now {
                 lines.push(format!("Cooldown: §f{}", seconds(t.cooldown_ends_at - now)));
@@ -763,8 +1211,9 @@ fn vanilla_server(game: &mut Game<'_>, pos: [i32; 3], block: &str, details: bool
     }
 }
 
-/// ItemStorageProvider: the stacks, the same items together, nine to a row (up to 54).
-fn storage<'a>(lines: &mut Vec<String>, stacks: impl Iterator<Item = &'a ItemStack>) {
+/// ItemStorageProvider: the stacks, the same items together, as many rows as its amounts allow: a few types by name
+/// (Show Name Threshold, or always with Always Use List Mode), the rest as icons.
+fn storage<'a>(game: &Game<'_>, details: bool, lines: &mut Vec<String>, stacks: impl Iterator<Item = &'a ItemStack>) {
     if !SERVER_ITEMS.get() {
         return;
     }
@@ -775,12 +1224,28 @@ fn storage<'a>(lines: &mut Vec<String>, stacks: impl Iterator<Item = &'a ItemSta
             None => merged.push((s.item.to_string(), s.count)),
         }
     }
-    for row in merged.chunks(9).take(6) {
-        let mut l = Line::new();
-        for (id, n) in row {
-            l = l.with(Line::item(id, *n));
+    if on(game, "storage_sort") {
+        merged.sort_by(|a, b| b.1.cmp(&a.1));
+    }
+    let amount = num(game, if details { "storage_detailed" } else { "storage_normal" }) as usize;
+    let extra = merged.len().saturating_sub(amount);
+    merged.truncate(amount);
+    let threshold = num(game, "storage_names") as usize;
+    if on(game, "always_list_mode") || merged.len() <= threshold {
+        for (id, n) in &merged {
+            lines.push(encode(&Line::new().with(Line::small(id)).with(El::Text(format!("§f{} x{}", item_name(game, id), commas(i64::from(*n)))))));
         }
-        lines.push(encode(&l));
+    } else {
+        for row in merged.chunks((num(game, "storage_per_line") as usize).max(1)) {
+            let mut l = Line::new();
+            for (id, n) in row {
+                l = l.with(Line::item(id, *n));
+            }
+            lines.push(encode(&l));
+        }
+    }
+    if extra > 0 {
+        lines.push(format!("§7and {extra} more"));
     }
 }
 
@@ -793,14 +1258,34 @@ fn cauldron(block: &str, game: &mut Game<'_>, pos: [i32; 3], details: bool, line
         "minecraft:powder_snow_cauldron" => ("minecraft:powder_snow", level(game) * 1000 / 3),
         _ => return,
     };
+    if !details && on(game, "fluid_detailed") {
+        return;
+    }
     let name = fluid_name(game, fluid);
-    lines.push(fluid_line(Some(&name), Some(fluid), mb, 1000, details));
+    lines.push(fluid_line_styled(game, Some(&name), Some(fluid), mb, 1000, details));
 }
 
 /// A fluid's name (its block's).
 fn fluid_name(game: &Game<'_>, fluid: &str) -> String {
     let (ns, path) = fluid.split_once(':').unwrap_or(("minecraft", fluid));
     game.translate(&format!("block.{ns}.{path}"), path)
+}
+
+/// Fluid Storage's Display Style: the bar, or its text with or without a bucket.
+fn fluid_line_styled(game: &Game<'_>, name: Option<&str>, fluid: Option<&str>, mb: i32, capacity: i32, details: bool) -> String {
+    let style = opt(game, "fluid_style");
+    if style == "bar" {
+        return fluid_line(name, fluid, mb, capacity, details);
+    }
+    let text = match name {
+        Some(n) if mb > 0 => format!("{n} §f{} mB", commas(mb.into())),
+        _ => format!("Empty {} mB", commas(capacity.into())),
+    };
+    let mut line = Line::new();
+    if style == "icon" {
+        line = line.with(Line::small("minecraft:bucket"));
+    }
+    encode(&line.with(El::Text(text)))
 }
 
 /// FluidStorageProvider's progress bar: "Water 4,000 mB" (with Show Details, "/ 16,000 mB"; "Empty" when empty).
@@ -860,18 +1345,20 @@ fn size(game: &Game<'_>, e: &El) -> (f32, f32) {
         El::Item { .. } => (18.0, 18.0),
         El::Arrow(_) => (22.0, 16.0),
         El::Bar { text, .. } => ((game.native_text_width(&plain(text)) + 6.0).max(100.0), 12.0),
+        El::Small(t) => (game.native_text_width(&plain(t)) * 0.75, 7.0),
         El::Hearts { max, absorb, .. } => {
             let icons = ((max.ceil() + absorb.ceil()) / 2.0).ceil().max(1.0);
-            if icons * 2.0 > 40.0 {
+            let line = num(game, "health_per_line").max(1.0) as f32;
+            if icons * 2.0 > num(game, "health_max") as f32 || on(game, "health_fractions") {
                 (game.native_text_width(&format!("{:.0}/{:.0}", 0, max)) + 10.0, 9.0)
             } else {
-                let per = icons.min(10.0);
-                let rows = (icons / 10.0).ceil();
+                let per = icons.min(line);
+                let rows = (icons / line).ceil();
                 (8.0 * per + 1.0, 5.0 + 4.0 * rows)
             }
         }
         El::Armor(a) => {
-            if *a > 20.0 {
+            if *a > num(game, "armor_max") as f32 {
                 (game.native_text_width(&format!("{a:.0}")) + 10.0, 9.0)
             } else {
                 let icons = (a / 2.0).ceil();
@@ -930,7 +1417,8 @@ fn draw_el(game: &Game<'_>, batch: &mut HudBatch, e: &El, x: f32, y: f32, h: f32
         // HealthElement: hearts in rows of ten (or "health/max" past 40).
         El::Hearts { health, max, absorb } => {
             let icons = ((max.ceil() + absorb.ceil()) / 2.0).ceil().max(1.0) as i32;
-            if icons * 2 > 40 {
+            let line = num(game, "health_per_line").max(1.0) as i32;
+            if icons * 2 > num(game, "health_max") as i32 || on(game, "health_fractions") {
                 if let Some(r) = sprite(game, "hud/heart/full") {
                     batch.rect_uv(x, y, 9.0, 9.0, r, white);
                 }
@@ -939,8 +1427,8 @@ fn draw_el(game: &Game<'_>, batch: &mut HudBatch, e: &El, x: f32, y: f32, h: f32
                 return;
             }
             let hearts = health.round() * 0.5;
-            let per = icons.min(10);
-            let rows = (icons + 9) / 10;
+            let per = icons.min(line);
+            let rows = (icons + line - 1) / line;
             for i in (1..=icons).rev() {
                 let col = (i - 1) % per;
                 let row = (i - 1) / per;
@@ -964,8 +1452,13 @@ fn draw_el(game: &Game<'_>, batch: &mut HudBatch, e: &El, x: f32, y: f32, h: f32
             }
         }
         // ArmorElement: armour icons (or the number past 20).
+        El::Small(t) => {
+            let start = batch.vertices.len();
+            batch.text_styled(atlas, &rich(t), x, y, white, true);
+            batch.scale_since(start, x, y, 0.75, 0.75);
+        }
         El::Armor(a) => {
-            if *a > 20.0 {
+            if *a > num(game, "armor_max") as f32 {
                 if let Some(r) = sprite(game, "hud/armor_full") {
                     batch.rect_uv(x, y, 9.0, 9.0, r, white);
                 }
@@ -1000,13 +1493,21 @@ fn keys(game: &Game<'_>) -> bool {
         .filter(|(_, k)| game.physical_keys.contains(k))
         .collect();
     let toggle = config(game).toggle_mode;
+    let tts_toggle = opt(game, "tts_mode") == "toggle";
     let hold = key("show_overlay").is_some_and(|k| game.physical_keys.contains(&k));
     CLIENT.with_borrow_mut(|c| {
         for (name, k) in &pressed {
             if !c.keys_down.contains(k) {
                 match *name {
                     "show_overlay" if toggle => c.hidden = !c.hidden,
-                    "toggle_liquid" => c.liquids = !c.liquids,
+                    "toggle_liquid" => {
+                        c.liquids = !c.liquids;
+                        c.say = Some(format!("Liquids {}", if c.liquids { "shown" } else { "hidden" }));
+                    }
+                    "narrate" if tts_toggle => {
+                        c.tts_on = !c.tts_on;
+                        c.tts_last.clear();
+                    }
                     "narrate" => c.narrate = true,
                     "config" => c.open_config = true,
                     "show_recipes" => c.lookup = Some(false),
@@ -1076,6 +1577,13 @@ thread_local! {
 }
 
 fn config(game: &Game<'_>) -> Config {
+    thread_local! {
+        static READ_AT: std::cell::Cell<u32> = const { std::cell::Cell::new(u32::MAX) };
+    }
+    let epoch = SETTINGS_EPOCH.load(std::sync::atomic::Ordering::Relaxed);
+    if READ_AT.replace(epoch) != epoch {
+        CONFIG.with_borrow_mut(|c| *c = None);
+    }
     CONFIG.with_borrow_mut(|c| {
         c.get_or_insert_with(|| {
             let flag = |k: &str, d: bool| game.native_setting(ID, k).map_or(d, |v| v == "true");
@@ -1100,7 +1608,7 @@ fn config(game: &Game<'_>) -> Config {
                 block_face: flag("block_face", d.block_face),
                 block_states: flag("block_states", d.block_states),
                 block_properties: flag("block_properties", d.block_properties),
-                registry_name: flag("registry_name", d.registry_name),
+                registry_name: game.native_setting(ID, "registry_name").is_some_and(|v| v != "false"),
             }
         })
         .clone()
@@ -1122,28 +1630,140 @@ pub fn settings(game: &mut Game<'_>, mod_id: &str, buttons: &mut Vec<String>) {
     if mod_id != ID {
         return;
     }
-    let c = config(game);
-    let on = |b: bool| if b { "On" } else { "Off" };
-    buttons.push(format!("Display Mode: {}", if c.toggle_mode { "Toggle" } else { "Hold Key" }));
-    buttons.push(format!("Display Blocks: {}", on(c.blocks)));
-    buttons.push(format!("Display Entities: {}", on(c.entities)));
-    buttons.push(format!("Show Mod Name: {}", on(c.mod_name)));
-    buttons.push(format!("Harvest Tool: {}", on(c.harvest_tool)));
-    buttons.push(format!("Breaking Progress: {}", on(c.breaking)));
-    buttons.push(format!("Entity Effects: {}", on(c.effects)));
-    buttons.push(format!("Entity Stats: {}", on(c.entity_stats)));
-    buttons.push(format!("Item Storage: {}", on(c.items)));
-    buttons.push(format!("Fluid Storage: {}", on(c.fluids)));
-    buttons.push(format!("Overlay Scale: {}", c.scale));
-    buttons.push(format!("Overlay Position: {}", ["Top", "Upper", "Middle"][c.position.min(2) as usize]));
-    buttons.push(format!("Display Bosses: {}", on(c.bosses)));
-    buttons.push(format!("Villager Restock: {}", on(c.restock)));
-    buttons.push(format!("Coordinates: {}", on(c.coordinates)));
-    buttons.push(format!("Distance: {}", on(c.distance)));
-    buttons.push(format!("Block Face: {}", on(c.block_face)));
-    buttons.push(format!("Block States: {}", on(c.block_states)));
-    buttons.push(format!("Block Properties: {}", on(c.block_properties)));
-    buttons.push(format!("Registry Name: {}", on(c.registry_name)));
+    for o in OPTIONS {
+        let value = opt(game, o.key);
+        let shown = o.values.iter().find(|(v, _)| *v == value).map_or(value.as_str(), |(_, l)| l);
+        buttons.push(format!("{}: {shown}", o.label));
+    }
+    buttons.push("Edit ignore list in Files...".to_owned());
+    buttons.push("Reload Plugins".to_owned());
+    buttons.push("Reset Settings".to_owned());
+}
+
+/// Profiles: leaving one keeps its settings, entering one brings its own back.
+fn switch_profile(game: &mut Game<'_>, from: &str, to: &str) {
+    let saved: Vec<String> = OPTIONS.iter().filter(|p| p.key != "profile" && p.key != "enable_profiles").map(|p| format!("{}={}", p.key, opt(game, p.key))).collect();
+    game.native_set_setting(ID, &format!("saved_profile_{from}"), &saved.join("\n"));
+    if let Some(text) = game.native_setting(ID, &format!("saved_profile_{to}")) {
+        for line in text.lines() {
+            if let Some((k, v)) = line.split_once('=') {
+                game.native_set_setting(ID, k, v);
+            }
+        }
+    }
+}
+
+fn settings_changed() {
+    SETTINGS_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    CONFIG.with_borrow_mut(|c| *c = None);
+    SERVER_CONFIG.with_borrow_mut(|c| *c = None);
+}
+
+/// `/jadec ...` (JadeClientCommand) on the player's own client, `/jade ...` to the server.
+pub fn client_command(game: &mut Game<'_>, command: &str, ran: &mut bool) {
+    let mut words = command.split_whitespace();
+    match words.next() {
+        Some("jadec") => {
+            *ran = true;
+            let args: Vec<&str> = words.collect();
+            match args.as_slice() {
+                ["config"] => CLIENT.with_borrow_mut(|c| c.open_config = true),
+                ["use_profile", n @ ("0" | "1" | "2" | "3")] => {
+                    let from = opt(game, "profile");
+                    if on(game, "enable_profiles") {
+                        switch_profile(game, &from, n);
+                    }
+                    game.native_set_setting(ID, "profile", n);
+                    settings_changed();
+                    game.native_chat(&format!("Jade profile #{n}"));
+                }
+                ["pin"] => {
+                    let was = CLIENT.with_borrow_mut(|c| c.pinned.take());
+                    if was.is_none() {
+                        let now = target(game);
+                        CLIENT.with_borrow_mut(|c| c.pinned = now);
+                    }
+                }
+                ["handlers"] => {
+                    let text: Vec<String> = OPTIONS.iter().map(|o| format!("- `{}`: {} (default {})", o.key, o.label, o.default)).collect();
+                    let done = Game::native_config_dir().ok().and_then(|d| std::fs::write(d.join("jade_handlers.md"), text.join("\n")).ok());
+                    game.native_chat(if done.is_some() { "Dumped successfully" } else { "Couldn't write jade_handlers.md" });
+                }
+                ["generate_server_overrides", pattern @ ..] => {
+                    let pattern = pattern.join(" ");
+                    let wanted: serde_json::Map<String, serde_json::Value> = OPTIONS
+                        .iter()
+                        .filter(|o| pattern.is_empty() || o.key.contains(pattern.as_str()))
+                        .map(|o| (o.key.to_owned(), serde_json::Value::String(opt(game, o.key))))
+                        .collect();
+                    if wanted.is_empty() {
+                        game.native_chat("No config options match the pattern");
+                    } else if let Some(file) = ignore_files().and_then(|f| f[0].parent().map(|d| d.join("server-plugin-overrides.json"))) {
+                        let _ = std::fs::write(&file, serde_json::Value::Object(wanted).to_string());
+                        settings_changed();
+                        game.native_chat(&format!("Generated override file: {}", file.display()));
+                    }
+                }
+                _ => game.native_chat("/jadec config | use_profile <0-3> | pin | handlers | generate_server_overrides [pattern]"),
+            }
+        }
+        Some("jade") => {
+            *ran = true;
+            let rest: Vec<&str> = words.collect();
+            let msg = format!("c {}", rest.join(" "));
+            if game.native_net_send_to_server(NET_REQUEST, msg.as_bytes()).is_err() {
+                let me = game.native_server_players().into_iter().next();
+                if let Some(me) = me {
+                    server_command(game, me.uuid, me.permission, &rest);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// `/jade show|hide <targets>` (JadeServerCommand, level 2): each player's overlay on or off.
+fn server_command(game: &mut Game<'_>, from: u128, level: u8, args: &[&str]) {
+    let tell = |game: &mut Game<'_>, t: &str| {
+        game.native_tell(from, horizon_client::text::Text::legacy(t));
+    };
+    if level < 2 {
+        tell(game, "You do not have permission to use this command");
+        return;
+    }
+    let (show, wanted) = match args {
+        ["show", t] => (true, *t),
+        ["hide", t] => (false, *t),
+        _ => {
+            tell(game, "/jade show|hide <targets>");
+            return;
+        }
+    };
+    let players = game.native_server_players();
+    let mut told = 0;
+    for p in players.iter().filter(|p| wanted == "@a" || (matches!(wanted, "@s" | "@p") && p.uuid == from) || p.name == wanted) {
+        let line = format!("o {}", u8::from(show));
+        if game.native_net_send_to_player(p.uuid, NET_DATA, line.as_bytes()).is_ok() {
+            told += 1;
+        }
+    }
+    tell(game, &format!("Overlay {} for {told} players", if show { "shown" } else { "hidden" }));
+}
+
+/// `native_perform_command`: a LAN guest's `/jade`.
+pub fn perform_command(game: &mut Game<'_>, player: &crate::game::native_server::NativeServerPlayer, command: &str, ran: &mut bool) {
+    let mut words = command.split_whitespace();
+    if words.next() == Some("jade") {
+        *ran = true;
+        let args: Vec<&str> = words.collect();
+        server_command(game, player.uuid, player.permission, &args);
+    }
+}
+
+pub fn register_commands(commands: &mut Vec<crate::game::native_server::NativeCommand>) {
+    for syntax in ["jade show @a", "jade hide @a", "jade show @s", "jade hide @s"] {
+        commands.push(crate::game::native_server::NativeCommand::op(syntax, 2));
+    }
 }
 
 /// `native_settings_click`: a click steps that option on.
@@ -1151,37 +1771,32 @@ pub fn settings_click(game: &mut Game<'_>, mod_id: &str, button: usize) {
     if mod_id != ID {
         return;
     }
-    let c = config(game);
-    let flip = |game: &mut Game<'_>, k: &str, v: bool| game.native_set_setting(ID, k, if v { "false" } else { "true" });
-    match button {
-        0 => game.native_set_setting(ID, "display_mode", if c.toggle_mode { "hold" } else { "toggle" }),
-        1 => flip(game, "display_blocks", c.blocks),
-        2 => flip(game, "display_entities", c.entities),
-        3 => flip(game, "mod_name", c.mod_name),
-        4 => flip(game, "harvest_tool", c.harvest_tool),
-        5 => flip(game, "breaking_progress", c.breaking),
-        6 => flip(game, "potion_effects", c.effects),
-        7 => flip(game, "entity_stats", c.entity_stats),
-        8 => flip(game, "item_storage", c.items),
-        9 => flip(game, "fluid_storage", c.fluids),
-        10 => {
-            let i = SCALES.iter().position(|v| (*v - c.scale).abs() < 0.01).unwrap_or(2);
-            game.native_set_setting(ID, "scale", &SCALES[(i + 1) % SCALES.len()].to_string());
+    if let Some(o) = OPTIONS.get(button) {
+        let value = opt(game, o.key);
+        let at = o.values.iter().position(|(v, _)| *v == value).unwrap_or(0);
+        let next = o.values[(at + 1) % o.values.len()].0;
+        if o.key == "profile" && on(game, "enable_profiles") {
+            switch_profile(game, &value, next);
         }
-        11 => game.native_set_setting(ID, "position", &((c.position + 1) % 3).to_string()),
-        12 => flip(game, "display_bosses", c.bosses),
-        13 => flip(game, "villager_restock", c.restock),
-        14 => flip(game, "coordinates", c.coordinates),
-        15 => flip(game, "distance", c.distance),
-        16 => flip(game, "block_face", c.block_face),
-        17 => flip(game, "block_states", c.block_states),
-        18 => flip(game, "block_properties", c.block_properties),
-        19 => flip(game, "registry_name", c.registry_name),
-        _ => {}
+        game.native_set_setting(ID, o.key, next);
+    } else {
+        match button - OPTIONS.len() {
+            0 => {
+                if let Some(files) = ignore_files()
+                    && let Some(dir) = files[0].parent()
+                {
+                    crate::game::packs::open_folder(dir);
+                }
+            }
+            1 => {}
+            _ => {
+                for o in OPTIONS {
+                    game.native_set_setting(ID, o.key, o.default);
+                }
+            }
+        }
     }
-    CONFIG.with_borrow_mut(|c| *c = None);
-    // The server reads the storage options from the same files.
-    SERVER_CONFIG.with_borrow_mut(|c| *c = None);
+    settings_changed();
 }
 
 thread_local! {
@@ -1210,17 +1825,36 @@ pub fn hud(game: &mut Game<'_>, batch: &mut HudBatch) {
         let stack = crate::game::native_hooks::NativeStack { item, count: 1, components: String::new() };
         game.native_panel_event("jei", &crate::game::native_hooks::NativePanelEvent::Key { key, stack });
     }
-    // Jade hides while a screen is open, and with Show Overlay toggled off.
-    if !game.native_on(ID) || game.player.is_none() || !matches!(game.screen, crate::game::Screen::Playing) || CLIENT.with_borrow(|c| c.hidden) {
+    CLIENT.with_borrow_mut(|c| c.showing = false);
+    if on(game, "narrate_keys")
+        && let Some(line) = CLIENT.with_borrow_mut(|c| c.say.take())
+    {
+        game.say_system_now(&horizon_client::text::Text::literal(&line));
+    }
+    // Jade hides while a screen is open (Hide from GUIs), over the player list (Hide from Player List), and with Show
+    // Overlay toggled off.
+    let screen_hides = !matches!(game.screen, crate::game::Screen::Playing) && on(game, "hide_from_guis");
+    let list_hides = on(game, "hide_from_tab_list") && game.physical_keys.contains(&winit::keyboard::KeyCode::Tab);
+    if !game.native_on(ID) || game.player.is_none() || screen_hides || list_hides || CLIENT.with_borrow(|c| c.hidden) {
         return;
     }
-    let Some(t) = target(game) else {
+    // Boss Bar Overlap's Hide Tooltip, and how far Push Down moves it.
+    let overlap = opt(game, "boss_bar_overlap");
+    let bars = game.boss_overlay.bars(horizon_client::boss_overlay::now_millis()).len();
+    if bars > 0 && overlap == "hide_tip" && opt(game, "position") == "0" {
+        return;
+    }
+    let pinned = CLIENT.with_borrow(|c| c.pinned.clone());
+    let Some(t) = pinned.or_else(|| target(game)) else {
         CLIENT.with_borrow_mut(|c| {
             c.progress_alpha = 0.0;
             c.lookup = None;
+            c.fade = 0.0;
+            c.tts_last.clear();
         });
         return;
     };
+    CLIENT.with_borrow_mut(|c| c.showing = true);
     // The server's lines for a block, asked for a few times a second while the player looks.
     if let Target::Block { pos, .. } = &t {
         let ask = CLIENT.with_borrow(|c| c.asked.is_none_or(|(p, at)| p != *pos || at.elapsed().as_millis() > 250) || c.asked_details != details);
@@ -1241,7 +1875,8 @@ pub fn hud(game: &mut Game<'_>, batch: &mut HudBatch) {
         let ask = CLIENT.with_borrow(|c| c.mob_asked.is_none_or(|(i, at)| i != id || at.elapsed().as_millis() > 250) || c.asked_details != details);
         if ask {
             let cfg = config(game);
-            let msg = format!("m {id} {} {} {}", u8::from(details), u8::from(cfg.restock), u8::from(cfg.entity_stats));
+            let bit = |k: &'static str| u8::from(on(game, k));
+            let msg = format!("m {id} {} {} {} {} {} {} {}", u8::from(details), u8::from(cfg.restock), u8::from(cfg.entity_stats), bit("mob_growth"), bit("mob_breeding"), bit("next_entity_drop"), bit("zombie_villager"));
             if game.native_net_send_to_server(NET_REQUEST, msg.as_bytes()).is_ok() {
                 CLIENT.with_borrow_mut(|c| {
                     c.mob_asked = Some((id, std::time::Instant::now()));
@@ -1251,6 +1886,18 @@ pub fn hud(game: &mut Game<'_>, batch: &mut HudBatch) {
         }
     }
     let (icon, title, ns) = match &t {
+        Target::Cart { index } => {
+            let Some(c) = game.carts.get(*index) else { return };
+            let id = c.kind.id();
+            let short = id.trim_start_matches("minecraft:");
+            (Some(id.to_owned()), game.translate(&format!("entity.minecraft.{short}"), short), "minecraft".to_owned())
+        }
+        Target::Boat { index } => {
+            let Some(b) = game.boats.get(*index) else { return };
+            let id = if b.chest { format!("minecraft:{}_chest_boat", b.wood) } else { format!("minecraft:{}_boat", b.wood) };
+            let short = id.trim_start_matches("minecraft:").to_owned();
+            (Some(id), game.translate(&format!("entity.minecraft.{short}"), &short), "minecraft".to_owned())
+        }
         // FallingBlockProvider: the block's item as its icon, its name.
         Target::Falling { index } => {
             let Some(f) = game.falling.get(*index) else { return };
@@ -1259,7 +1906,7 @@ pub fn hud(game: &mut Game<'_>, batch: &mut HudBatch) {
             (game.res.items().get(&block).is_some().then(|| block.clone()), item_name(game, &block), ns)
         }
         // PlayerHeadProvider: a head with an owner is named after them.
-        Target::Block { pos, block } if block == "minecraft:player_head" || block == "minecraft:player_wall_head" => {
+        Target::Block { pos, block } if (block == "minecraft:player_head" || block == "minecraft:player_wall_head") && on(game, "player_head") => {
             let name = head_owner(game, *pos);
             let title = match name {
                 Some(owner) => game.translate("block.minecraft.player_head.named", "%s's Head").replace("%s", &owner),
@@ -1314,15 +1961,26 @@ pub fn hud(game: &mut Game<'_>, batch: &mut HudBatch) {
         }
     }
     // The title line: the name, the harvest tool at its end (HarvestToolProvider, on the title by default).
-    let mut title_line = Line::new().with(El::Text(format!("§f{title}")));
+    let mut title_line = Line::new();
+    if on(game, "object_name") {
+        title_line = title_line.with(El::Text(format!("§f{title}")));
+    }
+    let mut tool_line = None;
     if let Target::Block { pos, block } = &t
         && config(game).harvest_tool
         && let Some(tool) = harvest_tool(game, *pos, block)
     {
-        title_line = title_line.with(El::Space(6.0));
-        title_line.els.extend(tool);
+        if on(game, "harvest_new_line") {
+            let mut l = Line::new();
+            l.els.extend(tool);
+            tool_line = Some(l);
+        } else {
+            title_line = title_line.with(El::Space(6.0));
+            title_line.els.extend(tool);
+        }
     }
     let mut lines = vec![title_line];
+    lines.extend(tool_line);
     vanilla(game, &t, details, &mut lines);
     if let Ok(providers) = CLIENT_PROVIDERS.lock().map(|v| v.clone()) {
         for p in providers {
@@ -1352,9 +2010,25 @@ pub fn hud(game: &mut Game<'_>, batch: &mut HudBatch) {
         });
     }
     let cfg = config(game);
+    // Display Mode Lite: the name and the mod only, the rest while Show Details is held.
+    if opt(game, "display_mode") == "lite" && !details {
+        lines.truncate(1);
+    }
     info_lines(game, &t, &cfg, &mut lines);
     if cfg.mod_name {
-        lines.push(Line::text(format!("§9§o{}", mod_name(&ns))));
+        let text = format!("§9§o{}", mod_name(&ns));
+        lines.push(if on(game, "mod_name_smaller") { Line::new().with(El::Small(text)) } else { Line::text(text) });
+    }
+    if on(game, "debug_mode") {
+        lines.push(Line::text(format!("§8{t:?}")));
+    }
+    // Text to Speech Mode Toggle: each new target read out.
+    if CLIENT.with_borrow(|c| c.tts_on) {
+        let spoken: String = lines.iter().flat_map(|l| l.els.iter()).filter_map(|e| if let El::Text(t) = e { Some(plain(t)) } else { None }).collect::<Vec<_>>().join(". ");
+        if CLIENT.with_borrow(|c| c.tts_last != spoken) {
+            game.say_system_now(&horizon_client::text::Text::literal(&spoken));
+            CLIENT.with_borrow_mut(|c| c.tts_last = spoken);
+        }
     }
     // The narrate key: every text of the box, line by line, through the game's narrator.
     if CLIENT.with_borrow_mut(|c| std::mem::take(&mut c.narrate)) {
@@ -1378,26 +2052,51 @@ pub fn hud(game: &mut Game<'_>, batch: &mut HudBatch) {
         (w, h.max(9.0))
     };
     let sizes: Vec<(f32, f32)> = lines.iter().map(line_size).collect();
-    let icon_w = if icon.is_some() { 20.0 } else { 0.0 };
-    let w = sizes.iter().map(|s| s.0).fold(0.0, f32::max) + icon_w;
+    // Icon Position: beside the box's top, its middle, or in the title's line.
+    let icon_pos = opt(game, "display_item");
+    let icon = icon.filter(|_| icon_pos != "hide");
+    let inline = icon_pos == "inline";
+    let icon_w = if icon.is_none() { 0.0 } else if inline { 0.0 } else { 20.0 };
+    let title_extra = if inline && icon.is_some() { 11.0 } else { 0.0 };
+    let w = sizes.iter().enumerate().map(|(i, s)| s.0 + if i == 0 { title_extra } else { 0.0 }).fold(0.0, f32::max) + icon_w;
     let h = sizes.iter().map(|s| s.1 + 1.0).sum::<f32>() - 1.0;
-    let x = ((batch.width - w) / 2.0).floor();
-    // The overlay's anchor (top centre, a third down, or the middle), and its scale about it.
-    let y = match cfg.position {
+    // The overlay's anchor, Flip Position with Main Hand, and its scale about it.
+    let side = opt(game, "overlay_x");
+    let mut x = match side.as_str() {
+        "left" => 12.0,
+        "right" => (batch.width - w - 12.0).floor(),
+        _ => ((batch.width - w) / 2.0).floor(),
+    };
+    if on(game, "flip_main_hand") && game.settings.main_hand_left {
+        x = (batch.width - w - x).floor();
+    }
+    let mut y = match cfg.position {
         1 => (batch.height / 3.0).floor(),
         2 => ((batch.height - h) / 2.0).floor(),
+        3 => (batch.height - h - 60.0).floor(),
         _ => 8.0,
     };
-    let start = batch.vertices.len();
-    let atlas = &game.gui.atlas;
-    horizon_client::ui::nine_slice(batch, atlas, "gui/sprites/tooltip/background", x - 12.0, y - 12.0, w + 24.0, h + 24.0, u32::MAX);
-    horizon_client::ui::nine_slice(batch, atlas, "gui/sprites/tooltip/frame", x - 12.0, y - 12.0, w + 24.0, h + 24.0, u32::MAX);
-    if let Some(icon) = &icon {
-        game.native_item(batch, icon, [x, y + ((h - 16.0) / 2.0).min(2.0).max(0.0)], 16.0);
+    if cfg.position == 0 && overlap == "push" {
+        y += 19.0 * bars as f32;
     }
+    let start = batch.vertices.len();
+    draw_theme(game, batch, [x - 4.0, y - 4.0, w + 8.0, h + 8.0]);
+    if let Some(icon) = &icon {
+        if inline {
+            game.native_item(batch, icon, [x, y], 9.0);
+        } else {
+            let iy = if icon_pos == "centered" { y + ((h - 16.0) / 2.0).max(0.0).floor() } else { y + ((h - 16.0) / 2.0).min(2.0).max(0.0) };
+            game.native_item(batch, icon, [x, iy], 16.0);
+        }
+    }
+    let text_alpha = num(game, "text_background_opacity");
     let mut ly = y;
-    for (l, (_, lh)) in lines.iter().zip(&sizes) {
-        let mut lx = x + icon_w;
+    for (row, (l, (lw, lh))) in lines.iter().zip(&sizes).enumerate() {
+        if text_alpha > 0.0 {
+            let a = (text_alpha / 100.0 * 255.0) as u32;
+            game.native_fill(batch, [x + icon_w - 1.0, ly - 1.0, lw + 2.0, lh + 1.0], a << 24);
+        }
+        let mut lx = x + icon_w + if row == 0 { title_extra } else { 0.0 };
         for e in &l.els {
             draw_el(game, batch, e, lx, ly, *lh);
             lx += size(game, e).0 + 1.0;
@@ -1424,6 +2123,64 @@ pub fn hud(game: &mut Game<'_>, batch: &mut HudBatch) {
     if (cfg.scale - 1.0).abs() > 0.01 {
         batch.scale_since(start, batch.width / 2.0, y - 12.0, cfg.scale, cfg.scale);
     }
+    // Overlay Animation: fades in over a tenth of a second.
+    if on(game, "animation") {
+        let fade = CLIENT.with_borrow_mut(|c| {
+            let now = std::time::Instant::now();
+            let dt = c.fade_at.map_or(0.0, |t| now.duration_since(t).as_secs_f32());
+            c.fade_at = Some(now);
+            c.fade = (c.fade + dt / 0.1).min(1.0);
+            c.fade
+        });
+        if fade < 1.0 {
+            for v in &mut batch.vertices[start..] {
+                let a = ((v.color >> 24) as f32 * fade) as u32;
+                v.color = (v.color & 0x00FF_FFFF) | (a << 24);
+            }
+        }
+    }
+}
+
+/// Jade's themes: `jade_themes/*.json` and their sprites' colours, the box a fill with its border, its corners cut in
+/// the default style and square in Slim; Background Opacity on the fill.
+fn draw_theme(game: &Game<'_>, batch: &mut HudBatch, [x, y, w, h]: [f32; 4]) {
+    let theme = opt(game, "overlay_theme");
+    let (fill, top, bottom, border) = match theme.as_str() {
+        "waila" => (0x10_0010u32, 0x50_00FFu32, 0x28_007Fu32, 1.0),
+        "create" => (0x00_0000, 0x40_3C37, 0x2A_2723, 1.0),
+        "top" => (0x00_6699, 0x99_99AD, 0x99_99AD, 2.0),
+        _ => (0x13_1313, 0x38_3838, 0x28_2828, 1.0),
+    };
+    let alpha = (num(game, "overlay_alpha") / 100.0 * 255.0) as u32;
+    let alpha = if theme == "top" { alpha.min(0x80) } else { alpha };
+    let bg = (alpha << 24) | fill;
+    let (a, b) = (0xFF00_0000 | top, 0xFF00_0000 | bottom);
+    let slim = opt(game, "theme_style") == "slim" || theme == "top";
+    let cut = if slim { 0.0 } else { 1.0 };
+    game.native_fill(batch, [x + cut, y, w - 2.0 * cut, h], bg);
+    if !slim {
+        game.native_fill(batch, [x, y + cut, cut, h - 2.0 * cut], bg);
+        game.native_fill(batch, [x + w - cut, y + cut, cut, h - 2.0 * cut], bg);
+    }
+    let i = if slim { 0.0 } else { 1.0 };
+    game.native_fill(batch, [x + i, y + i, w - 2.0 * i, border], a);
+    game.native_fill(batch, [x + i, y + h - i - border, w - 2.0 * i, border], b);
+    game.native_fill(batch, [x + i, y + i, border, h - 2.0 * i], a);
+    game.native_fill(batch, [x + w - i - border, y + i, border, h - 2.0 * i], b);
+}
+
+/// Boss Bar Overlap's Hide Boss Bar: no bars while the box shows.
+pub fn hide_boss_bars(game: &Game<'_>) -> bool {
+    CLIENT.with_borrow(|c| c.showing) && opt(game, "boss_bar_overlap") == "hide_bar"
+}
+
+/// Mod Name on Item Tooltip: the stack's mod at the end of its tooltip.
+pub fn item_tooltip(game: &Game<'_>, stack: &ItemStack, mut lines: Vec<(horizon_client::text::Text, u32)>) -> Vec<(horizon_client::text::Text, u32)> {
+    if game.native_on(ID) && on(game, "item_mod_name") {
+        let ns = stack.item.split_once(':').map_or("minecraft", |(n, _)| n);
+        lines.push((horizon_client::text::Text::legacy(&format!("§9§o{}", mod_name(ns))), u32::MAX));
+    }
+    lines
 }
 
 /// The settings as the server reads them (its own thread's copy).
@@ -1445,6 +2202,12 @@ pub fn from_client(game: &mut Game<'_>, player: u128, channel: &str, data: &[u8]
     let text = String::from_utf8_lossy(data);
     if let Some(rest) = text.strip_prefix("m ") {
         mob_request(game, player, rest);
+        return;
+    }
+    if let Some(rest) = text.strip_prefix("c ") {
+        let level = game.native_server_players().into_iter().find(|p| p.uuid == player).map_or(0, |p| p.permission);
+        let args: Vec<&str> = rest.split_whitespace().collect();
+        server_command(game, player, level, &args);
         return;
     }
     let v: Vec<i32> = text.split(' ').filter_map(|s| s.parse().ok()).collect();
@@ -1479,7 +2242,7 @@ pub fn from_client(game: &mut Game<'_>, player: u128, channel: &str, data: &[u8]
 /// A player asks for a mob's lines: its id, then Show Details, Villager Restock and entity stats as that player has them.
 fn mob_request(game: &mut Game<'_>, player: u128, text: &str) {
     let v: Vec<u32> = text.split(' ').filter_map(|s| s.parse().ok()).collect();
-    let [id, details, restock, stats] = v.as_slice() else { return };
+    let [id, details, restock, stats, growth, breeding, drop, cure] = v.as_slice() else { return };
     let Some(m) = game.mobs.iter().find(|m| m.id == *id) else { return };
     // Within reach of the player only (a client can ask anything).
     let near = game
@@ -1491,7 +2254,7 @@ fn mob_request(game: &mut Game<'_>, player: u128, text: &str) {
         return;
     }
     let mut out = format!("m {id}");
-    for l in mob_lines(m, game.world.game_time, *details != 0, *restock != 0, *stats != 0) {
+    for l in mob_lines(m, game.world.game_time, *details != 0, *restock != 0, *stats != 0, [*growth != 0, *breeding != 0, *drop != 0, *cure != 0]) {
         out.push('\n');
         out.push_str(&encode(&l).replace('\n', " "));
     }
@@ -1499,17 +2262,17 @@ fn mob_request(game: &mut Game<'_>, player: u128, text: &str) {
 }
 
 /// The lines of a mob that only the server knows.
-fn mob_lines(m: &horizon_client::mobs::Mob, game_time: i64, details: bool, restock: bool, entity_stats: bool) -> Vec<Line> {
+fn mob_lines(m: &horizon_client::mobs::Mob, game_time: i64, details: bool, restock: bool, entity_stats: bool, [growth, breeding, drops, cure]: [bool; 4]) -> Vec<Line> {
     let mut lines = Vec::new();
     let kind = m.kind.id.as_ref();
     // MobGrowthProvider: a baby's growing time (AgeableMob.age counts up to 0).
-    if m.extra.age < 0 {
+    if growth && m.extra.age < 0 {
         lines.push(Line::text(if m.extra.age_locked { "Growing time: §fPaused".to_owned() } else { format!("Growing time: §f{}", seconds(-i64::from(m.extra.age))) }));
     }
     // MobBreedingProvider: in love, or the breeding cooldown (age above 0).
-    if m.extra.in_love > 0 {
+    if breeding && m.extra.in_love > 0 {
         lines.push(Line::text("Breeding CD: §fIn Love"));
-    } else if m.extra.age > 0 {
+    } else if breeding && m.extra.age > 0 {
         lines.push(Line::text(format!("Breeding CD: §f{}", seconds(i64::from(m.extra.age)))));
     }
     // HorseStatsProvider: a llama's strength; a horse's jump height and speed (out of the most with Show Details).
@@ -1530,13 +2293,14 @@ fn mob_lines(m: &horizon_client::mobs::Mob, game_time: i64, details: bool, resto
     }
     // ZombieVillagerProvider: the time left to cure.
     if kind == "minecraft:zombie_villager"
+        && cure
         && let Some(c) = horizon_client::mobs::zombie_villager::cure(m)
         && c.time > 0
     {
         lines.push(Line::text(format!("Conversion time: §f{}", seconds(i64::from(c.time)))));
     }
     // NextEntityDropProvider: a grown chicken's next egg, an armadillo's next scute.
-    if matches!(kind, "minecraft:chicken" | "minecraft:armadillo") && !m.is_baby() && m.extra.egg_time < 48000 {
+    if drops && matches!(kind, "minecraft:chicken" | "minecraft:armadillo") && !m.is_baby() && m.extra.egg_time < 48000 {
         let what = if kind == "minecraft:chicken" { "Next egg" } else { "Next scute" };
         lines.push(Line::text(format!("{what}: §f{}", seconds(i64::from(m.extra.egg_time)))));
     }
@@ -1566,6 +2330,11 @@ pub fn from_server(channel: &str, data: &[u8]) {
         return;
     }
     let text = String::from_utf8_lossy(data);
+    // ShowOverlayPacket.
+    if let Some(rest) = text.strip_prefix("o ") {
+        CLIENT.with_borrow_mut(|c| c.hidden = rest.trim() != "1");
+        return;
+    }
     if let Some(rest) = text.strip_prefix("m ") {
         let mut it = rest.split('\n');
         let Some(id) = it.next().and_then(|i| i.parse().ok()) else { return };
