@@ -18,6 +18,11 @@ sub-options are ported. These still differ:
 - Access variant and NPC details are approximate.
 - Dedicated servers: Horizon doesn't build native mods for them, so "server" here means a LAN host.
 
+## Install
+
+`jade-26.3.5.hnmod` in this repository is the packaged native mod, checked with `cargo horizon-mod check`. It's built
+for the Horizon commit named below and needs no other mod.
+
 ## Build
 
 This is a [Horizon](https://github.com/horizon-rust/horizon) native mod bundle: Rust mixins compiled into the game.
