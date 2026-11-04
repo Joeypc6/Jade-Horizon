@@ -1661,6 +1661,11 @@ fn settings_changed() {
 
 /// `/jadec ...` (JadeClientCommand) on the player's own client, `/jade ...` to the server.
 pub fn client_command(game: &mut Game<'_>, command: &str, ran: &mut bool) {
+    // A guest's command that reached the server's dispatcher is theirs, not this client's.
+    if let Some(player) = game.native_acting_player() {
+        perform_command(game, &player, command, ran);
+        return;
+    }
     let mut words = command.split_whitespace();
     match words.next() {
         Some("jadec") => {
@@ -1957,7 +1962,7 @@ pub fn hud(game: &mut Game<'_>, batch: &mut HudBatch) {
             game.screen = crate::game::Screen::Inventory;
             game.capture(false);
         } else {
-            let _ = game.key_pressed(winit::keyboard::KeyCode::KeyE);
+            let _ = game.key_pressed(winit::keyboard::KeyCode::KeyE, winit::keyboard::KeyCode::KeyE);
         }
     }
     // The title line: the name, the harvest tool at its end (HarvestToolProvider, on the title by default).
