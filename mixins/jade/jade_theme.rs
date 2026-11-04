@@ -12,6 +12,7 @@ use crate::game::jade;
 use horizon_client::hud::{HudBatch, rgba};
 use std::borrow::Cow;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -53,25 +54,78 @@ impl Palette {
     }
 }
 
-/// `Color.valueOf`, as ARGB: `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa` (the `#` optional), `rgb(r, g, b[, a])` and
-/// `transparent`. The HSL forms aren't read: such a colour keeps the palette's default.
+/// `Color.split`: what's between the brackets, by commas or spaces (`/` is a space).
+fn color_parts(s: &str) -> Option<Vec<String>> {
+    let s = s.replace('/', " ");
+    let inner = s.get(s.find('(')? + 1..s.find(')')?)?;
+    let parts: Vec<&str> = if inner.contains(',') { inner.split(',').collect() } else { inner.split_whitespace().collect() };
+    Some(parts.into_iter().map(|p| p.trim().to_owned()).collect())
+}
+
+/// `Color.parseDouble`: a number, or a percentage of `limit`.
+fn color_number(p: &str, limit: f64) -> Option<f64> {
+    match p.trim().strip_suffix('%') {
+        Some(pct) => Some(pct.trim().parse::<f64>().ok()? * (limit / 100.0)),
+        None => p.trim().parse().ok(),
+    }
+}
+
+/// `Color.toDegrees`.
+fn color_degrees(p: &str) -> Option<f64> {
+    let p = p.trim();
+    if let Some(v) = p.strip_suffix("deg") {
+        v.trim().parse().ok()
+    } else if let Some(v) = p.strip_suffix("grad") {
+        Some(v.trim().parse::<f64>().ok()? / 400.0 * 360.0)
+    } else if let Some(v) = p.strip_suffix("rad") {
+        Some(v.trim().parse::<f64>().ok()? * (180.0 / std::f64::consts::PI))
+    } else if let Some(v) = p.strip_suffix("turn") {
+        Some(v.trim().parse::<f64>().ok()? * 360.0)
+    } else {
+        color_number(p, 360.0)
+    }
+}
+
+/// `Color.hsl`, as ARGB.
+fn hsl_color(hue: f64, saturation: f64, lightness: f64, opacity: f64) -> u32 {
+    let c = (1.0 - (2.0 * lightness - 1.0).abs()) * saturation;
+    let h = hue / 60.0;
+    let x = c * (1.0 - (h % 2.0 - 1.0).abs());
+    let (r, g, b) = match h {
+        h if (0.0..1.0).contains(&h) => (c, x, 0.0),
+        h if (1.0..2.0).contains(&h) => (x, c, 0.0),
+        h if (2.0..3.0).contains(&h) => (0.0, c, x),
+        h if (3.0..4.0).contains(&h) => (0.0, x, c),
+        h if (4.0..5.0).contains(&h) => (x, 0.0, c),
+        h if (5.0..6.0).contains(&h) => (c, 0.0, x),
+        _ => (0.0, 0.0, 0.0),
+    };
+    let m = lightness - c / 2.0;
+    let channel = |v: f64| (((v + m) * 255.0) as i32).clamp(0, 255) as u32;
+    (((opacity.clamp(0.0, 1.0) * 255.0) as u32) << 24) | (channel(r) << 16) | (channel(g) << 8) | channel(b)
+}
+
+/// `Color.valueOf`, as ARGB: `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa` (the `#` optional), `rgb(r, g, b[, a])`,
+/// `hsl(h, s, l[, a])` and `transparent`.
 fn color(s: &str) -> Option<u32> {
     let s = s.trim().to_lowercase();
     if s == "transparent" {
         return Some(0);
     }
     if s.contains("rgb") {
-        let inner = s.split_once('(')?.1.trim_end_matches(')');
-        let parts: Vec<&str> = inner.split(',').map(str::trim).collect();
-        let channel = |p: &str| -> Option<u32> {
-            match p.strip_suffix('%') {
-                Some(pct) => Some((pct.parse::<f32>().ok()? / 100.0 * 255.0) as u32),
-                None => p.parse::<u32>().ok(),
-            }
-        };
+        let parts = color_parts(&s)?;
+        let channel = |p: &String| -> Option<u32> { Some(color_number(p, 255.0)?.round().clamp(0.0, 255.0) as u32) };
         let (r, g, b) = (channel(parts.first()?)?, channel(parts.get(1)?)?, channel(parts.get(2)?)?);
-        let a = parts.get(3).and_then(|p| p.parse::<f32>().ok()).map_or(255, |a| (a.clamp(0.0, 1.0) * 255.0) as u32);
-        return Some((a << 24) | (r.min(255) << 16) | (g.min(255) << 8) | b.min(255));
+        let a = parts.get(3).and_then(|p| color_number(p, 1.0)).map_or(255, |a| (a.clamp(0.0, 1.0) * 255.0) as u32);
+        return Some((a << 24) | (r << 16) | (g << 8) | b);
+    }
+    if s.contains("hsl") {
+        let parts = color_parts(&s)?;
+        let hue = color_degrees(parts.first()?)?;
+        let saturation = color_number(parts.get(1)?, 1.0)?;
+        let lightness = color_number(parts.get(2)?, 1.0)?;
+        let opacity = parts.get(3).and_then(|p| color_number(p, 1.0)).unwrap_or(1.0);
+        return Some(hsl_color(hue, saturation, lightness, opacity));
     }
     let hex = s.strip_prefix('#').unwrap_or(&s);
     let full: String = if hex.len() == 3 || hex.len() == 4 { hex.chars().flat_map(|c| [c, c]).collect() } else { hex.to_owned() };
@@ -322,6 +376,71 @@ impl TextLook {
     }
 }
 
+/// SneakyDetails.Simple: the arrow under a Lite box that has more to show.
+struct Sneaky {
+    sprite: String,
+    width: f32,
+    height: f32,
+    offset: [f32; 2],
+    breath: bool,
+    distance: f32,
+    period: f32,
+}
+
+impl Sneaky {
+    /// `SneakyDetails.CODEC`; `SneakyDetails.DEFAULT` without one (or for a type Java refuses too).
+    fn parse(v: Option<&serde_json::Value>) -> Sneaky {
+        let default = Sneaky { sprite: "jade:details_arrow".to_owned(), width: 7.0, height: 5.0, offset: [0.0; 2], breath: true, distance: 1.0, period: 12.0 };
+        let Some(v) = v.filter(|v| v.get("type").and_then(|t| t.as_str()) == Some("simple")) else { return default };
+        let (Some(sprite), Some(width), Some(height)) = (v.get("sprite").and_then(|x| x.as_str()), v.get("width").and_then(|x| x.as_f64()), v.get("height").and_then(|x| x.as_f64())) else {
+            return default;
+        };
+        let float = |k: &str, or: f64| v.get(k).and_then(|x| x.as_f64()).unwrap_or(or) as f32;
+        Sneaky {
+            sprite: if sprite.contains(':') { sprite.to_owned() } else { format!("minecraft:{sprite}") },
+            width: width as f32,
+            height: height as f32,
+            offset: [float("offsetX", 0.0), float("offsetY", 0.0)],
+            breath: v.get("animation").and_then(|x| x.as_str()) == Some("breath"),
+            distance: float("animationDistance", 1.0),
+            period: float("animationPeriod", 12.0),
+        }
+    }
+}
+
+/// details_arrow.png, 7 by 5, as (row, from, to, ARGB) pixel runs.
+const DETAILS_ARROW: [(u8, u8, u8, u32); 13] = [
+    (0, 0, 7, 0xFF66_6666),
+    (1, 0, 1, 0xFF66_6666),
+    (1, 1, 2, 0xFFD9_D9D9),
+    (1, 2, 5, 0xFFFF_FFFF),
+    (1, 5, 6, 0xFFD9_D9D9),
+    (1, 6, 7, 0xFF66_6666),
+    (2, 1, 2, 0xFF66_6666),
+    (2, 2, 3, 0xFFD9_D9D9),
+    (2, 3, 4, 0xFFFF_FFFF),
+    (2, 4, 5, 0xFFD9_D9D9),
+    (2, 5, 6, 0xFF66_6666),
+    (3, 2, 5, 0xFF66_6666),
+    (4, 3, 4, 0xFF66_6666),
+];
+
+/// `Theme.modifyIcon`'s slot: the sprite, when the atlas has it, and what stands between it and the icon (`padding`:
+/// its inflation and its nine-slice border): top, right, bottom, left.
+pub struct IconSlot<'a> {
+    sprite: &'a Sprite,
+    pub padding: [f32; 4],
+}
+
+impl IconSlot<'_> {
+    /// Draws the slot round an icon of `size` at `at`.
+    pub fn draw(&self, game: &Game<'_>, batch: &mut HudBatch, at: [f32; 2], size: f32, alpha: f32) {
+        let [top, right, bottom, left] = self.padding;
+        let a = (alpha.clamp(0.0, 1.0) * 255.0) as u8;
+        self.sprite.draw(game, batch, [at[0] - left, at[1] - top, size + left + right, size + top + bottom], a);
+    }
+}
+
 /// Theme and its holder's autoEnable.
 pub struct Theme {
     /// `fullId`.
@@ -341,6 +460,20 @@ pub struct Theme {
     amount: u32,
     pub change_opacity: f32,
     auto_enable: bool,
+    sneaky: Sneaky,
+    icon_slot: Option<Sprite>,
+    icon_slot_inflation: f32,
+    /// `spriteMapping`: `namespace:path` to `namespace:path`.
+    sprite_mapping: HashMap<String, String>,
+}
+
+/// A `namespace:path` sprite id as the atlas names it.
+fn atlas_name(id: &str) -> String {
+    match id.split_once(':') {
+        Some(("minecraft", path)) => format!("gui/sprites/{path}"),
+        Some((ns, path)) => format!("{ns}:gui/sprites/{path}"),
+        None => format!("gui/sprites/{id}"),
+    }
 }
 
 fn batch_color(argb: u32) -> u32 {
@@ -376,6 +509,17 @@ impl Theme {
             amount: text_setting.and_then(|t| t.get("itemAmountColor")).and_then(|x| x.as_str()).and_then(color).unwrap_or(0xFFFF_FFFF),
             change_opacity: v.get("changeOpacity").and_then(|x| x.as_f64()).unwrap_or(0.0).clamp(0.0, 1.0) as f32,
             auto_enable: v.get("autoEnable").and_then(|x| x.as_bool()).unwrap_or(false),
+            sneaky: Sneaky::parse(v.get("sneakyDetails")),
+            icon_slot: v.get("iconSlotSprite").and_then(|x| x.as_str()).map(|s| Sprite::new(root, &if s.contains(':') { s.to_owned() } else { format!("minecraft:{s}") })),
+            icon_slot_inflation: v.get("iconSlotInflation").and_then(|x| x.as_f64()).unwrap_or(0.0) as f32,
+            sprite_mapping: v
+                .get("spriteMapping")
+                .and_then(|x| x.as_object())
+                .map(|map| {
+                    let full = |s: &str| if s.contains(':') { s.to_owned() } else { format!("minecraft:{s}") };
+                    map.iter().filter_map(|(from, to)| Some((full(from), full(to.as_str()?)))).collect()
+                })
+                .unwrap_or_default(),
         })
     }
 
@@ -386,6 +530,57 @@ impl Theme {
     /// BoxStyle's padding: up, down, left, right.
     pub fn padding(&self) -> [f32; 4] {
         self.tooltip_style.padding
+    }
+
+    /// `Theme.mapSprite`, for a sprite Jade asks for by `namespace:path`: what the atlas should be asked for instead.
+    /// None when the theme says nothing of it, which is nearly always (an empty map is one comparison).
+    pub fn mapped_sprite(&self, id: &str) -> Option<String> {
+        if self.sprite_mapping.is_empty() {
+            return None;
+        }
+        self.sprite_mapping.get(id).map(|to| atlas_name(to))
+    }
+
+    /// `Theme.modifyIcon`: the slot behind the icon. None without one, without its sprite in the atlas (the jar's textures
+    /// aren't there), and for an in-line icon.
+    pub fn icon_slot(&self, game: &Game<'_>) -> Option<IconSlot<'_>> {
+        let sprite = self.icon_slot.as_ref().filter(|s| game.gui.atlas.sprites.contains_key(&s.atlas))?;
+        let i = self.icon_slot_inflation;
+        let padding = match sprite.nine {
+            Some([_, _, left, top, right, bottom]) => [i + top, i + right, i + bottom, i + left],
+            None => [i; 4],
+        };
+        Some(IconSlot { sprite, padding })
+    }
+
+    /// `SneakyDetails.Simple.render`: the arrow at the foot of the box. Nothing for the part of its period it is away.
+    pub fn draw_sneaky(&self, game: &Game<'_>, batch: &mut HudBatch, frame: [f32; 4], ticks: f32, opacity: f32) {
+        let s = &self.sneaky;
+        let x = frame[0] + frame[2] / 2.0 - s.width / 2.0 + s.offset[0];
+        let mut y = frame[1] + frame[3] - s.height / 2.0 + s.offset[1];
+        let mut alpha = 1.0;
+        if s.breath {
+            let breath = (ticks / 5.0) % s.period - 2.0;
+            if breath > 4.0 {
+                return;
+            }
+            alpha = 1.0 - breath.abs() / 2.0;
+            y += s.distance * breath;
+            if alpha < 0.016 {
+                return;
+            }
+        }
+        let alpha = (alpha * opacity).clamp(0.0, 1.0);
+        let name = self.mapped_sprite(&s.sprite).unwrap_or_else(|| atlas_name(&s.sprite));
+        if let Some(r) = game.gui.atlas.sprites.get(&name).copied() {
+            batch.rect_uv(x, y, s.width, s.height, r, rgba(255, 255, 255, (alpha * 255.0) as u8));
+        } else if s.sprite == "jade:details_arrow" {
+            // Jade's own sprite isn't in the atlas: its pixels, at its size.
+            for (row, from, to, argb) in DETAILS_ARROW {
+                let (from, to, row) = (f32::from(from), f32::from(to), f32::from(row));
+                batch.fill(&game.gui.atlas, x + from, y + row, to - from, 1.0, dim(argb, alpha));
+            }
+        }
     }
 }
 
@@ -610,11 +805,15 @@ fn fallback(game: &Game<'_>) -> Theme {
         amount: 0xFFFF_FFFF,
         change_opacity: 0.0,
         auto_enable: false,
+        sneaky: Sneaky::parse(None),
+        icon_slot: None,
+        icon_slot_inflation: 0.0,
+        sprite_mapping: HashMap::new(),
     }
 }
 
-/// `jade.theme.<namespace>.<path>`: Jade's own names are in the jar's language files, which the game's language
-/// doesn't load, so those are here.
+/// `jade.theme.<namespace>.<path>`: Jade's own names are in the jar's language files (`jade::ensure_lang`); these are for
+/// the moment before that, and a theme of a pack's with no name.
 fn theme_name(game: &Game<'_>, main: &str) -> String {
     let (ns, path) = main.split_once(':').unwrap_or(("jade", main));
     let fallback = match main {

@@ -231,6 +231,165 @@ fn plugin_keys() -> Vec<&'static str> {
     PLUGIN_OPTIONS.lock().map(|v| v.iter().map(|(k, _, _)| *k).collect()).unwrap_or_default()
 }
 
+/// `assets/jade/lang/<code>.json` of the jar (this bundle's `data/lang`), compiled in.
+fn jar_lang(code: &str) -> Option<&'static [u8]> {
+    let bytes: &'static [u8] = match code {
+        "de_de" => horizon_client::native_data!("jade", "lang/de_de.json"),
+        "en_us" => horizon_client::native_data!("jade", "lang/en_us.json"),
+        "es_es" => horizon_client::native_data!("jade", "lang/es_es.json"),
+        "fr_fr" => horizon_client::native_data!("jade", "lang/fr_fr.json"),
+        "it_it" => horizon_client::native_data!("jade", "lang/it_it.json"),
+        "ja_jp" => horizon_client::native_data!("jade", "lang/ja_jp.json"),
+        "ko_kr" => horizon_client::native_data!("jade", "lang/ko_kr.json"),
+        "nl_nl" => horizon_client::native_data!("jade", "lang/nl_nl.json"),
+        "pl_pl" => horizon_client::native_data!("jade", "lang/pl_pl.json"),
+        "pt_br" => horizon_client::native_data!("jade", "lang/pt_br.json"),
+        "ru_ru" => horizon_client::native_data!("jade", "lang/ru_ru.json"),
+        "tr_tr" => horizon_client::native_data!("jade", "lang/tr_tr.json"),
+        "uk_ua" => horizon_client::native_data!("jade", "lang/uk_ua.json"),
+        "zh_cn" => horizon_client::native_data!("jade", "lang/zh_cn.json"),
+        "zh_tw" => horizon_client::native_data!("jade", "lang/zh_tw.json"),
+        _ => return None,
+    };
+    Some(bytes)
+}
+
+/// A key only a language this mod has added to has.
+const LANG_MARK: &str = "hz.jade.lang";
+
+/// The language as it is, on top of the jar's files: `Language::load` over these layers keeps the game's (a resource
+/// pack's Jade strings included) and adds what only the jar has.
+struct JarLanguage {
+    code: String,
+    current: Vec<u8>,
+    bidirectional: bool,
+}
+
+impl horizon_client::lang::ResourceSource for JarLanguage {
+    fn read(&self, path: &str) -> Option<Vec<u8>> {
+        if let Some(code) = path.strip_prefix("assets/jade/lang/").and_then(|p| p.strip_suffix(".json")) {
+            return jar_lang(code).map(<[u8]>::to_vec);
+        }
+        if path == format!("assets/zz_loaded/lang/{}.json", self.code) {
+            return Some(self.current.clone());
+        }
+        // Language::load asks the language's direction of the packs.
+        if path == "assets/pack.mcmeta" && self.bidirectional {
+            return serde_json::to_vec(&serde_json::json!({"language": {self.code.as_str(): {"name": self.code.as_str(), "region": "", "bidirectional": true}}})).ok();
+        }
+        None
+    }
+    fn exists(&self, path: &str) -> bool {
+        path == format!("assets/minecraft/lang/{}.json", self.code) || self.read(path).is_some()
+    }
+    fn namespaces(&self) -> Vec<String> {
+        vec!["jade".to_owned(), "zz_loaded".to_owned()]
+    }
+}
+
+/// The jar's strings in the game's language, again whenever the game has loaded a language (a change in Options, a
+/// resource reload). A lookup a frame once done. Every `game.translate` of this mod reads them from then on.
+pub fn ensure_lang() {
+    use horizon_client::lang;
+    if lang::has(LANG_MARK) {
+        return;
+    }
+    let Some(loaded) = lang::current() else { return };
+    let code = loaded.code.clone();
+    let mut map = loaded.map().clone();
+    map.insert(LANG_MARK.to_owned(), code.clone());
+    let Ok(current) = serde_json::to_vec(&map) else { return };
+    let source = JarLanguage { code: code.clone(), current, bidirectional: lang::bidirectional() };
+    lang::set(lang::Language::load(&[&source], &code));
+}
+
+/// `Component.translatable` in the game's language, with `ensure_lang` having added the jar's.
+pub fn tr(key: &str, fallback: &str) -> String {
+    horizon_client::lang::get_or(key, fallback)
+}
+
+/// An option's key in the jar's language files (`OptionsList.Entry.makeKey`, `plugin_<id>` for a provider's). None for the
+/// few this port added, which have no such key.
+pub fn option_lang_key(key: &str) -> Option<String> {
+    let minecraft = |path: &str| Some(format!("config.jade.plugin_minecraft.{path}"));
+    let core = |path: &str| Some(format!("config.jade.plugin_jade.{path}"));
+    match key {
+        "display_tooltip" | "display_mode" | "display_blocks" | "display_entities" | "display_bosses" | "display_fluids" | "hide_from_tab_list" | "hide_from_guis" | "boss_bar_overlap" | "display_item" | "tts_mode"
+        | "perspective_mode" | "reach_distance" | "item_mod_name" | "text_background_opacity" | "flip_main_hand" | "overlay_alpha" | "overlay_theme" | "theme_style" | "animation" | "narrate_keys" | "enable_profiles"
+        | "debug_mode" | "accessibility_plugin" | "always_list_mode" => Some(format!("config.jade.{key}")),
+        "scale" => Some("config.jade.overlay_scale".to_owned()),
+        "max_position_deviation" => Some("gamerule.jade.max_position_deviation".to_owned()),
+        "object_name" | "mod_name" | "mod_name_smaller" | "distance" | "coordinates" | "block_face" | "registry_name" | "block_states" | "block_properties" | "loot_table" => core(key),
+        "mod_name_translated" => core("mod_name.translated"),
+        "coordinates_rel" => core("coordinates.rel"),
+        "registry_special" => core("registry_name.special"),
+        "entity_health" | "entity_armor" | "potion_effects" | "item_frame" | "container_entity" | "mob_growth" | "mob_breeding" | "armor_stand" | "painting" | "next_entity_drop" | "animal_owner" | "sulfur_cube"
+        | "villager_profession" | "villager_restock" | "zombie_villager" | "pet_armor" | "item_tooltip" | "breaking_progress" | "harvest_tool" | "brewing_stand" | "tnt_stability" | "beehive" | "note_block" | "command_block"
+        | "enchantment_power" | "total_enchantment_power" | "player_head" | "item_storage" | "energy_storage" | "fluid_storage" | "lectern" | "furnace" | "mob_spawner" | "crop_progress" | "redstone" | "jukebox" | "shelf"
+        | "waxed" => minecraft(key),
+        "health_max" => minecraft("entity_health.max_for_render"),
+        "health_per_line" => minecraft("entity_health.icons_per_line"),
+        "health_fractions" => minecraft("entity_health.show_fractions"),
+        "armor_max" => minecraft("entity_armor.max_for_render"),
+        "entity_stats" => minecraft("horse_stats"),
+        "effects_limit" => minecraft("potion_effects.limit"),
+        "harvest_new_line" => minecraft("harvest_tool.new_line"),
+        "harvest_effective" => minecraft("harvest_tool.effective_tool"),
+        "harvest_unbreakable" => minecraft("harvest_tool.show_unbreakable"),
+        "harvest_creative" => minecraft("harvest_tool.creative"),
+        "storage_detailed" => minecraft("item_storage.detailed_amount"),
+        "storage_normal" => minecraft("item_storage.normal_amount"),
+        "storage_names" => minecraft("item_storage.show_name_amount"),
+        "storage_per_line" => minecraft("item_storage.items_per_line"),
+        "storage_sort" => minecraft("item_storage.sort"),
+        "energy_detailed" => minecraft("energy_storage.detailed"),
+        "energy_style" => minecraft("energy_storage.style"),
+        "fluid_detailed" => minecraft("fluid_storage.detailed"),
+        "fluid_style" => minecraft("fluid_storage.style"),
+        "access_sign" => Some("config.jade.plugin_jade_access.sign".to_owned()),
+        "access_block" => Some("config.jade.plugin_jade_access.block".to_owned()),
+        "access_entity" => Some("config.jade.plugin_jade_access.entity".to_owned()),
+        "access_variant" => Some("config.jade.plugin_jade_access.entity_variant".to_owned()),
+        "access_held" => Some("config.jade.plugin_jade_access.held_item".to_owned()),
+        "access_npc" => Some("config.jade.plugin_jade_access.npc_description".to_owned()),
+        _ => None,
+    }
+}
+
+/// An option's title in the game's language.
+pub fn option_label(o: &Opt) -> String {
+    match option_lang_key(o.key) {
+        Some(key) => tr(&key, o.label),
+        None => o.label.to_owned(),
+    }
+}
+
+/// What a value of an option is called in the jar's language files (`OptionsList.choices`: the option's key and the
+/// enum's name).
+fn value_lang_key(option: &str, value: &str) -> Option<String> {
+    let enum_name = match (option, value) {
+        (_, "true") => return Some("options.on".to_owned()),
+        (_, "false") => return Some("options.off".to_owned()),
+        ("reach_distance", "0") => return Some("options.off".to_owned()),
+        ("display_mode", "hold") => "hold_key",
+        ("display_mode" | "display_fluids" | "display_item" | "tts_mode" | "perspective_mode", v) => v,
+        ("boss_bar_overlap", "none") => "no_operation",
+        ("boss_bar_overlap", "hide_bar") => "hide_boss_bar",
+        ("boss_bar_overlap", "hide_tip") => "hide_tooltip",
+        ("boss_bar_overlap", "push") => "push_down",
+        ("registry_name", "advanced") => "advanced_tooltips",
+        ("pet_armor_mode", "damageable") => return Some("config.jade.plugin_minecraft.pet_armor_show_damageable".to_owned()),
+        ("pet_armor_mode", "all") => return Some("config.jade.plugin_minecraft.pet_armor_show_all".to_owned()),
+        ("energy_style" | "fluid_style", "bar") => "progress_bar",
+        ("energy_style" | "fluid_style", "plain") => "plain_text",
+        ("energy_style" | "fluid_style", "icon") => "icon",
+        ("profile", "1") => return Some("jade.profile_preset.accessibility".to_owned()),
+        ("profile", "2") => return Some("jade.profile_preset.minimalism".to_owned()),
+        _ => return None,
+    };
+    Some(format!("{}_{enum_name}", option_lang_key(option)?))
+}
+
 /// One of Jade's settings: the file it is kept in, its label, its default and its values with their labels.
 pub struct Opt {
     pub key: &'static str,
@@ -562,8 +721,8 @@ struct Client {
     /// Jade's key toggles: the overlay shown (Show Overlay), fluids targeted (Toggle Fluid).
     hidden: bool,
     liquids: bool,
-    /// The keys down last frame (each toggle acts on its press).
-    keys_down: Vec<winit::keyboard::KeyCode>,
+    /// The mappings down last frame (each toggle acts on its press).
+    keys_down: Vec<&'static str>,
     /// Jade's breaking progress fade (BreakingProgressProvider.progressAlpha).
     progress_alpha: f32,
     /// The narrate key was pressed: the next box is read out (JadeClient.narrate).
@@ -1238,9 +1397,16 @@ fn vanilla(game: &Game<'_>, t: &Target, details: bool, lines: &mut Vec<Line>) {
             }
             // EntityVariantProvider: what a mob's variant is.
             if access(game, "access_variant")
-                && let Some(words) = variant_name(m)
+                && let Some(name) = variant_name(m)
             {
-                lines.push(Line::text(format!("Variant: {words}")));
+                lines.push(Line::text(variant_line(m, &name)));
+                // Horse.getMarkings.
+                if m.kind.id == "minecraft:horse" {
+                    const MARKINGS: [&str; 5] = ["none", "white", "white_field", "white_dots", "black_dots"];
+                    let marking = MARKINGS[usize::from(m.extra.variant2) % MARKINGS.len()];
+                    let words = tr(&format!("jade.access.entity.horse_markings.{marking}"), &marking.replace('_', " "));
+                    lines.push(Line::text(tr("jade.access.entity.horse_markings", "Markings: %s").replace("%s", &words)));
+                }
             }
             // HeldItemProvider: both hands.
             if access(game, "access_held") {
@@ -1253,20 +1419,9 @@ fn vanilla(game: &Game<'_>, t: &Target, details: bool, lines: &mut Vec<Line>) {
             }
             // EntityDetailsBodyProvider: pose, passengers, leads.
             if access(game, "access_entity") {
-                let pose = if m.extra.sitting || m.extra.camel_sitting {
-                    "Sitting"
-                } else {
-                    match m.extra.synced_pose {
-                        2 => "Sleeping",
-                        3 => "Swimming",
-                        5 => "Crouching",
-                        7 => "Dying",
-                        10 => "Sitting",
-                        _ => "",
-                    }
-                };
-                if !pose.is_empty() {
-                    lines.push(Line::text(format!("Pose: {pose}")));
+                let pose = format!("jade.access.entity.pose.{}", pose_id(m));
+                if horizon_client::lang::has(&pose) {
+                    lines.push(Line::text(tr("jade.access.entity.pose", "Pose: %s").replace("%s", &tr(&pose, ""))));
                 }
                 if m.extra.rider.is_some() {
                     lines.push(Line::text("Passengers: 1"));
@@ -1423,15 +1578,39 @@ fn variant_name(m: &horizon_client::mobs::Mob) -> Option<String> {
     let v = usize::from(m.extra.variant);
     let of = |names: &[&str]| names.get(v).map(|n| (*n).to_owned());
     match m.kind.id.as_ref() {
-        "minecraft:axolotl" => of(&["Leucistic", "Wild", "Gold", "Cyan", "Blue"]),
-        "minecraft:llama" | "minecraft:trader_llama" => of(&["Creamy", "White", "Brown", "Gray"]),
-        "minecraft:rabbit" => of(&["Brown", "White", "Black", "White Splotched", "Gold", "Salt"]),
-        "minecraft:parrot" => of(&["Red Blue", "Blue", "Green", "Yellow Blue", "Gray"]),
-        "minecraft:fox" => of(&["Red", "Snow"]),
-        "minecraft:panda" => of(&["Normal", "Lazy", "Worried", "Playful", "Brown", "Weak", "Aggressive"]),
-        "minecraft:mooshroom" => of(&["Red", "Brown"]),
-        _ => None,
+        "minecraft:axolotl" => of(&["lucy", "wild", "gold", "cyan", "blue"]),
+        "minecraft:rabbit" if v == 99 => Some("evil".to_owned()),
+        "minecraft:rabbit" => of(&["brown", "white", "black", "white_splotched", "gold", "salt"]),
+        "minecraft:parrot" => of(&["red_blue", "blue", "green", "yellow_blue", "gray"]),
+        "minecraft:fox" => of(&["red", "snow"]),
+        // The villager's biome, `villager/variant`; zombie villagers report theirs too.
+        "minecraft:villager" | "minecraft:zombie_villager" => of(&horizon_client::mobs::render::VILLAGER_TYPES),
+        // wolf, cat, frog, pig, cow, chicken, mooshroom, horse, llama, zombie nautilus: `<mob>/variant`.
+        _ => horizon_client::mobs::finalize::variant_component(m).map(|(_, id)| id.trim_start_matches("minecraft:").to_owned()),
     }
+}
+
+/// EntityVariantProvider: `jade.access.entity.<mob>.<variant>` when a pack names it, else the name with spaces.
+fn variant_line(m: &horizon_client::mobs::Mob, name: &str) -> String {
+    let mob = m.kind.id.trim_start_matches("minecraft:");
+    let words = tr(&format!("jade.access.entity.{mob}.{name}"), &name.replace(['.', '_'], " "));
+    tr("jade.access.entity.variant", "Variant: %s").replace("%s", &words)
+}
+
+/// EntityDetailsBodyProvider.getPoseId: the pose, or what a mob's own state says in its place.
+fn pose_id(m: &horizon_client::mobs::Mob) -> u32 {
+    use horizon_client::mobs::{armadillo, axolotl, fox, panda};
+    match m.kind.id.as_ref() {
+        "minecraft:wolf" | "minecraft:cat" | "minecraft:parrot" | "minecraft:nautilus" if m.extra.sitting => return 10,
+        "minecraft:panda" if panda::is_sitting(m) => return 10,
+        "minecraft:camel" | "minecraft:camel_husk" if m.extra.camel_sitting => return 10,
+        "minecraft:fox" if fox::flag(m, fox::SLEEPING) => return 2,
+        "minecraft:fox" if fox::flag(m, fox::SITTING) => return 10,
+        "minecraft:axolotl" if axolotl::is_playing_dead(m) => return 1000,
+        "minecraft:armadillo" if armadillo::state(m) == armadillo::ROLLING => return 1001,
+        _ => {}
+    }
+    u32::from(m.extra.synced_pose)
 }
 
 /// AccessibilityPlugin.replaceTitle: the patterns of `jade.access.*` the state or the mob calls for, in Jade's order.
@@ -1519,13 +1698,22 @@ fn access_title(game: &Game<'_>, t: &Target, mut title: String) -> String {
             if m.is_baby() {
                 wrap("Baby {0}");
             }
-            if &*m.kind.id == "minecraft:sheep" {
-                if m.extra.sheared {
-                    wrap("Sheared {0}");
+            // CommonProxy.isShearable: `readyForShearing`, and a baby sheep or mooshroom isn't.
+            match m.kind.id.as_ref() {
+                "minecraft:copper_golem" => {
+                    let shears_take = m.saddle_item().is_some_and(|a| game.res.items().item_tags.get("minecraft:shearable_from_copper_golem").is_some_and(|t| t.contains(&*a.item)));
+                    if shears_take {
+                        wrap("Shearable {0}");
+                    }
                 }
-                if let Some(color) = DYES.get(usize::from(m.extra.color)) {
-                    wrap(&format!("{color} {{0}}"));
-                }
+                "minecraft:sheep" | "minecraft:mooshroom" if m.is_baby() || m.extra.sheared => wrap("Sheared {0}"),
+                "minecraft:snow_golem" | "minecraft:bogged" if m.extra.sheared => wrap("Sheared {0}"),
+                _ => {}
+            }
+            if &*m.kind.id == "minecraft:sheep"
+                && let Some(color) = DYES.get(usize::from(m.extra.color))
+            {
+                wrap(&format!("{color} {{0}}"));
             }
             if m.extra.saddled {
                 wrap("Saddled {0}");
@@ -1843,18 +2031,10 @@ fn vanilla_server(game: &mut Game<'_>, player: u128, pos: [i32; 3], block: &str,
         if block == "minecraft:comparator" {
             let n = game.with_level(|_, _, ticks| ticks.comparator_outputs.get(&at).copied()).unwrap_or(0);
             lines.push(format!("Power: §f{n}"));
-        } else if block == "minecraft:calibrated_sculk_sensor"
-            && let Some(facing) = game.native_block_property(pos, "facing")
-        {
-            // CalibratedSculkSensorBlock.FACING's opposite: the side it takes its input from.
-            let back: [i32; 3] = match facing.as_str() {
-                "north" => [0, 0, 1],
-                "south" => [0, 0, -1],
-                "west" => [1, 0, 0],
-                _ => [-1, 0, 0],
-            };
-            let n = sensor_input(game, [pos[0] + back[0], pos[1] + back[1], pos[2] + back[2]]);
-            lines.push(format!("Input: §f{n}"));
+        } else if block == "minecraft:calibrated_sculk_sensor" {
+            // CalibratedSculkSensorBlockEntity's back signal: `level.getSignal` behind it, as the sensor itself reads it.
+            let n = game.with_level(|b, level, ticks| b.calibrated_back_signal(level, ticks, at));
+            lines.push(tr("jade.input_signal", "Input: %d").replace("%d", &format!("§f{n}")));
         }
     }
     // The ender chest's contents are the asking player's own (ItemStorageProvider.Extension.getGroups).
@@ -2023,15 +2203,6 @@ fn vanilla_server(game: &mut Game<'_>, player: u128, pos: [i32; 3], block: &str,
     }
 }
 
-/// `SignalGetter.getSignal` from the block behind a sensor, as `state_signal` reads the common sources (Horizon's
-/// signal walker isn't open to mods): a wire's power, a powered source's 15.
-fn sensor_input(game: &Game<'_>, at: [i32; 3]) -> i32 {
-    if let Some(power) = game.native_block_property(at, "power").and_then(|p| p.parse().ok()) {
-        return power;
-    }
-    i32::from(game.native_block_property(at, "powered").as_deref() == Some("true") || game.native_block(at) == "minecraft:redstone_block") * 15
-}
-
 /// ItemStorageProvider: the stacks, the same items together, as many rows as its amounts allow: a few types by name
 /// (Show Name Threshold, or always with Always Use List Mode), the rest as icons.
 fn storage<'a>(game: &Game<'_>, details: bool, lines: &mut Vec<String>, stacks: impl Iterator<Item = &'a ItemStack>) {
@@ -2144,6 +2315,12 @@ pub fn commas(n: i64) -> String {
 /// A vanilla GUI sprite's region ("hud/heart/full"), as the atlas names it.
 fn sprite(game: &Game<'_>, name: &str) -> Option<horizon_client::hud::Rect> {
     let atlas = &game.gui.atlas;
+    // Theme.mapSprite: the theme's stand-in, when the atlas has it.
+    if let Some(mapped) = crate::game::jade_theme::current(game).mapped_sprite(&format!("minecraft:{name}"))
+        && let Some(r) = atlas.sprites.get(&mapped)
+    {
+        return Some(*r);
+    }
     atlas.sprites.get(&format!("gui/sprites/{name}")).or_else(|| atlas.sprites.get(name)).copied()
 }
 
@@ -2432,35 +2609,39 @@ fn keys(game: &Game<'_>) -> bool {
     if crate::game::jade_config::is_open() {
         return false;
     }
-    let key = |name: &str| {
+    // InputConstants.Key: a mapping is a key of the keyboard or a button of the mouse.
+    let down = |name: &str| {
         let default = KEYS.iter().find(|k| k[0] == name).map_or("", |k| k[2]);
-        horizon_client::keybinds::key_code(&game.native_mod_key(ID, name, default))
+        let bound = game.native_mod_key(ID, name, default);
+        match horizon_client::keybinds::mouse_button(&bound) {
+            Some(button) => game.physical_buttons.contains(&button),
+            None => horizon_client::keybinds::key_code(&bound).is_some_and(|k| game.physical_keys.contains(&k)),
+        }
     };
     static PROFILE_KEYS: [&str; 4] = ["profile.0", "profile.1", "profile.2", "profile.3"];
     let profiles = if on(game, "enable_profiles") { &PROFILE_KEYS[..] } else { &[] };
-    let pressed: Vec<(&str, winit::keyboard::KeyCode)> = ["config", "show_overlay", "toggle_liquid", "show_recipes", "show_uses", "narrate"]
+    let pressed: Vec<&'static str> = ["config", "show_overlay", "toggle_liquid", "show_recipes", "show_uses", "narrate"]
         .into_iter()
         .chain(profiles.iter().copied())
-        .filter_map(|n| Some((n, key(n)?)))
-        .filter(|(_, k)| game.physical_keys.contains(k))
+        .filter(|n| down(n))
         .collect();
     let toggle = config(game).toggle_mode;
     let tts_toggle = opt(game, "tts_mode") == "toggle";
-    let hold = key("show_overlay").is_some_and(|k| game.physical_keys.contains(&k));
+    let hold = down("show_overlay");
     CLIENT.with_borrow_mut(|c| {
-        for (name, k) in &pressed {
-            if !c.keys_down.contains(k) {
+        for name in &pressed {
+            if !c.keys_down.contains(name) {
                 match *name {
                     "show_overlay" if toggle => {
                         c.hidden = !c.hidden;
-                        c.say = Some(if c.hidden { "Overlay hidden" } else { "Overlay shown" }.to_owned());
+                        c.say = Some(if c.hidden { tr("narration.jade.key.show_overlay.off", "Overlay hidden") } else { tr("narration.jade.key.show_overlay.on", "Overlay shown") });
                         if c.hidden {
                             c.hint = Some(0);
                         }
                     }
                     "toggle_liquid" => {
                         c.liquids = !c.liquids;
-                        c.say = Some(if c.liquids { "Fluid shown" } else { "Fluid hidden" }.to_owned());
+                        c.say = Some(if c.liquids { tr("narration.jade.key.toggle_liquid.on", "Fluid shown") } else { tr("narration.jade.key.toggle_liquid.off", "Fluid hidden") });
                     }
                     "narrate" if tts_toggle => {
                         c.tts_on = !c.tts_on;
@@ -2485,9 +2666,9 @@ fn keys(game: &Game<'_>) -> bool {
         if !toggle {
             c.hidden = !hold;
         }
-        c.keys_down = pressed.iter().map(|(_, k)| *k).collect();
+        c.keys_down = pressed;
     });
-    key("show_details").is_some_and(|k| game.physical_keys.contains(&k))
+    down("show_details")
 }
 
 /// JadeKeys: name, label and default key (Options > Mods > Jade lists them; the player rebinds them there).
@@ -2601,7 +2782,11 @@ pub fn value_label(game: &Game<'_>, o: &Opt) -> String {
     if value.starts_with("custom:") {
         return "Custom".to_owned();
     }
-    o.values.iter().find(|(v, _)| *v == value).map_or(value.clone(), |(_, l)| (*l).to_owned())
+    let english = o.values.iter().find(|(v, _)| *v == value).map_or(value.as_str(), |(_, l)| *l);
+    match value_lang_key(o.key, &value) {
+        Some(key) => tr(&key, english),
+        None => english.to_owned(),
+    }
 }
 
 /// `native_settings`: Jade's options page, the store under the config screens; its first button opens those.
@@ -2609,16 +2794,17 @@ pub fn settings(game: &mut Game<'_>, mod_id: &str, buttons: &mut Vec<String>) {
     if mod_id != ID {
         return;
     }
-    buttons.push("Jade Configuration...".to_owned());
+    ensure_lang();
+    buttons.push(format!("{}...", tr("gui.jade.configuration", "Jade Configuration")));
     for o in OPTIONS {
-        buttons.push(format!("{}: {}", o.label, value_label(game, o)));
+        buttons.push(format!("{}: {}", option_label(o), value_label(game, o)));
     }
     for (key, label, _) in plugin_options() {
-        buttons.push(format!("{label}: {}", if on(game, key) { "On" } else { "Off" }));
+        buttons.push(format!("{label}: {}", if on(game, key) { tr("options.on", "On") } else { tr("options.off", "Off") }));
     }
-    buttons.push("Edit ignore list in Files...".to_owned());
-    buttons.push("Reload Plugins".to_owned());
-    buttons.push("Reset Settings".to_owned());
+    buttons.push(tr("config.jade.edit_ignore_list", "Edit ignore list in Files..."));
+    buttons.push(tr("config.jade.reload_plugins", "Reload Plugins"));
+    buttons.push(tr("config.jade.reset_settings", "Reset Settings"));
 }
 
 /// Jade.getProfilePreset: what a profile starts as besides the defaults, by its number.
@@ -2851,7 +3037,7 @@ pub fn settings_click(game: &mut Game<'_>, mod_id: &str, button: usize) {
         return;
     }
     let Some(button) = button.checked_sub(1) else {
-        crate::game::jade_config::open_over_options();
+        crate::game::jade_config::open_over_options(game);
         return;
     };
     if let Some(o) = OPTIONS.get(button) {
@@ -2877,6 +3063,7 @@ thread_local! {
 
 /// `native_hud`: the box, at the top centre as Jade's default places it.
 pub fn hud(game: &mut Game<'_>, batch: &mut HudBatch) {
+    ensure_lang();
     let details = keys(game);
     if game.player.as_ref().is_some_and(|p| p.in_powder_snow) {
         CLIENT.with_borrow_mut(|c| c.powder_at = Some(std::time::Instant::now()));
@@ -2884,21 +3071,21 @@ pub fn hud(game: &mut Game<'_>, batch: &mut HudBatch) {
     if let Some(n) = CLIENT.with_borrow_mut(|c| c.use_profile.take()) {
         use_profile(game, &n.to_string());
         // narration.jade.key.profile.
-        CLIENT.with_borrow_mut(|c| c.say = Some(format!("Use Profile #{n}")));
+        CLIENT.with_borrow_mut(|c| c.say = Some(tr("narration.jade.key.profile", "Use %s").replace("%s", &format!("#{n}"))));
     }
     // Jade.history()'s hints, once each: toast.jade.toggle_hint and toast.jade.tts_hint, in chat as Jade sends them.
     if let Some(which) = CLIENT.with_borrow_mut(|c| c.hint.take()) {
         let (flag, key_name, first, second) = if which == 0 {
-            ("hint_overlay_toggle", "show_overlay", "Jade is now closed", "Press %s again to reopen")
+            ("hint_overlay_toggle", "show_overlay", tr("toast.jade.toggle_hint.1", "Jade is now closed"), tr("toast.jade.toggle_hint.2", "Press %s again to reopen"))
         } else {
-            ("hint_narrator_toggle", "narrate", "Jade's narrator is now open", "Press %s again to disable")
+            ("hint_narrator_toggle", "narrate", tr("toast.jade.tts_hint.1", "Jade's narrator is now open"), tr("toast.jade.tts_hint.2", "Press %s again to disable"))
         };
         if game.native_setting(ID, flag).is_none() {
             game.native_set_setting(ID, flag, "shown");
             let default = KEYS.iter().find(|k| k[0] == key_name).map_or("", |k| k[2]);
             let bound = game.native_mod_key(ID, key_name, default);
             let bound = game.translate(&bound, &bound);
-            game.native_chat(first);
+            game.native_chat(&first);
             game.native_chat(&second.replace("%s", &bound));
         }
     }
@@ -3165,8 +3352,11 @@ pub fn hud(game: &mut Game<'_>, batch: &mut HudBatch) {
         }
     }
     let cfg = config(game);
-    // Display Mode Lite: the name and the mod only, the rest while Show Details is held.
+    // Display Mode Lite: the name and the mod only, the rest while Show Details is held (with an arrow while there is a
+    // rest: Tooltip.sneakyDetails).
+    let mut sneaky = false;
     if opt(game, "display_mode") == "lite" && !details {
+        sneaky = lines.len() > 1;
         lines.truncate(1);
     }
     info_lines(game, &t, &cfg, &mut lines);
@@ -3211,7 +3401,7 @@ pub fn hud(game: &mut Game<'_>, batch: &mut HudBatch) {
         CLIENT.with_borrow_mut(|c| c.progress_alpha = 0.0);
         None
     };
-    let built = BuiltBox { lines, icon, icon_stack, badge, mining };
+    let built = BuiltBox { lines, icon, icon_stack, badge, mining, sneaky };
     // A config screen draws it, over its list (PreviewOptionsScreen).
     if previewing {
         CLIENT.with_borrow_mut(|c| c.built = Some(Box::new(built)));
@@ -3228,6 +3418,8 @@ pub struct BuiltBox {
     badge: bool,
     /// BreakingProgressProvider: how far, whether it fails, and its alpha.
     mining: Option<(f32, bool, f32)>,
+    /// Tooltip.sneakyDetails.
+    sneaky: bool,
 }
 
 /// `OverlayRenderer.renderOverlay`'s stand-in while the position is adjusted with nothing looked at: the Grass Block.
@@ -3235,7 +3427,7 @@ pub fn sample_box(game: &Game<'_>) -> BuiltBox {
     let theme = crate::game::jade_theme::current(game);
     let title = format!("{}{}", theme.title_code, item_name(game, "minecraft:grass_block"));
     let modname = format!("{}{}", theme.mod_code, mod_name(game, "minecraft"));
-    BuiltBox { lines: vec![Line::text(title), Line::text(modname)], icon: None, icon_stack: None, badge: false, mining: None }
+    BuiltBox { lines: vec![Line::text(title), Line::text(modname)], icon: None, icon_stack: None, badge: false, mining: None, sneaky: false }
 }
 
 /// The box `hud` built for a config screen this frame.
@@ -3282,10 +3474,14 @@ fn place(game: &Game<'_>, [sw, sh]: [f32; 2], b: &BuiltBox, [pad_up, pad_down, p
     let icon_pos = opt(game, "display_item");
     let has_icon = b.icon.is_some() && icon_pos != "hide";
     let inline = icon_pos == "inline";
-    let icon_w = if !has_icon || inline { 0.0 } else { 20.0 };
+    // Theme.modifyIcon: the slot's padding is part of the icon.
+    let theme = crate::game::jade_theme::current(game);
+    let slot = theme.icon_slot(game).filter(|_| has_icon && !inline).map_or([0.0; 4], |s| s.padding);
+    let icon_w = if !has_icon || inline { 0.0 } else { 20.0 + slot[1] + slot[3] };
     let title_extra = if inline && has_icon { 11.0 } else { 0.0 };
     let w = sizes.iter().enumerate().map(|(i, s)| s.0 + if i == 0 { title_extra } else { 0.0 }).fold(0.0, f32::max) + icon_w;
     let h = sizes.iter().map(|s| s.1 + 1.0).sum::<f32>() - 1.0;
+    let h = if has_icon && !inline && slot != [0.0; 4] { h.max(16.0 + slot[0] + slot[2]) } else { h };
     let scale = num(game, "scale") as f32;
     let scale = if scale > 0.0 { scale } else { 1.0 };
     let (bw, bh) = (w + pad_left + pad_right, h + pad_up + pad_down);
@@ -3366,7 +3562,17 @@ pub fn draw_box(game: &Game<'_>, batch: &mut HudBatch, b: &BuiltBox, adjusting: 
             ([x, y], 9.0)
         } else {
             let iy = if icon_pos == "centered" { y + ((h - 16.0) / 2.0).max(0.0).floor() } else { y + ((h - 16.0) / 2.0).min(2.0).max(0.0) };
-            ([x, iy], 16.0)
+            match theme.icon_slot(game) {
+                // The slot, with the icon inside it.
+                Some(slot) => {
+                    let [top, _, bottom, left] = slot.padding;
+                    let iy = if icon_pos == "centered" { y + ((h - 16.0 - top - bottom) / 2.0).max(0.0).floor() + top } else { y + top };
+                    let at = [x + left, iy];
+                    slot.draw(game, batch, at, 16.0, alpha);
+                    (at, 16.0)
+                }
+                None => ([x, iy], 16.0),
+            }
         };
         let drawn = b.icon_stack.as_ref().is_some_and(|stack| game.native_item_stack(batch, stack, at, size));
         if !drawn {
@@ -3393,6 +3599,14 @@ pub fn draw_box(game: &Game<'_>, batch: &mut HudBatch, b: &BuiltBox, adjusting: 
     }
     if let Some((progress, failed, progress_alpha)) = b.mining {
         crate::game::jade_theme::draw_progress(game, batch, &theme, p.frame, progress, failed, progress_alpha * alpha);
+    }
+    if b.sneaky {
+        // OverlayRenderer.ticks: twenty a second.
+        thread_local! {
+            static STARTED: std::time::Instant = std::time::Instant::now();
+        }
+        let ticks = STARTED.with(|t| t.elapsed().as_secs_f32()) * 20.0;
+        theme.draw_sneaky(game, batch, p.frame, ticks, 1.0);
     }
     if (p.scale - 1.0).abs() > 0.01 {
         batch.scale_since(start, p.pivot[0], p.pivot[1], p.scale, p.scale);

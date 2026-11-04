@@ -5,17 +5,21 @@
 //
 // It opens as the mod's own screen over the world (`native_mod_screen_open`), or drawn over the Options screen from Jade's
 // page in Options > Mods: a mod's own screen can't open there, nor over the title, and that page can be reached from
-// both. Over Options there is no hud, so no preview of what is looked at (as Java has none without a level).
+// both. Options draws no hud, so with a world behind it `frame` builds the preview's box; with none there is no preview
+// (as Java has none without a level).
 //
 // The screen hooks have only `&Game`: settings can be written from them, what needs more waits for `frame`.
 //
-// Jade's GUI sprites aren't in the atlas (jade_theme.rs), so its navigation bar and search box are drawn with fills of
-// their PNGs' colours, the jar's `high_contrast/` versions while the high_contrast pack is on. Those three sprites are
-// all that folder replaces. The buttons, sliders and scrollbar are vanilla's own sprites, as Java's are.
+// Jade's GUI sprites aren't in the atlas (jade_theme.rs), so its navigation bar, search box, cards, popup and toggles are
+// drawn with fills of their PNGs' colours, the jar's `high_contrast/` versions while the high_contrast pack is on. Those
+// three sprites are all that folder replaces. The buttons, sliders and scrollbar are vanilla's own sprites, as Java's are.
+//
+// Its words are the jar's language files (`jade::ensure_lang`), keys named beside each use.
 use crate::game::Game;
 use crate::game::jade::{self, ID};
 use crate::game::jade_theme;
 use crate::game::native_hooks::NativeScreenView;
+use crate::game::jade::tr;
 use horizon_client::hud::{HudBatch, rgba};
 use horizon_client::text::Text;
 use horizon_client::ui;
@@ -35,10 +39,21 @@ const OFF_COLOR: u32 = 0xFF_8A80;
 /// ProfileEntry's name while it is the active profile, and otherwise.
 const ACTIVE_COLOR: u32 = 0xFF_FF55;
 const NAME_COLOR: u32 = 0xE0_E0E0;
+/// OptionsList's card mode.
+const CARD_GAP: f32 = 8.0;
+const CARD_HEIGHT: f32 = 42.0;
+const CARD_HEIGHT_TALL: f32 = 46.0;
+const CARD_BLEED: f32 = 3.0;
+const MIN_CARD_WIDTH: f32 = 168.0;
+const MAX_CARDS_PER_ROW: f32 = 3.0;
+/// The toggle a card has for a Boolean option (ToggleButton).
+const TOGGLE_W: f32 = 29.0;
+const TOGGLE_H: f32 = 17.0;
 
 /// What a page is made of, in WailaConfigScreen's and PluginsConfigScreen's order.
 #[derive(Clone, Copy)]
 enum Item {
+    /// A section, by its title's language key.
     Head(&'static str),
     Danger(&'static str),
     /// An option, how deep under the one above it (OptionValue.parent).
@@ -56,7 +71,7 @@ use Item::{Adjust, Danger, Head, Key, Opt, Reload, Reset, Slide};
 /// WailaConfigScreen.createOptions. The options this port keeps that Java's screen doesn't show are in their sections:
 /// no setting is left without a row.
 const MOD_PAGE: &[Item] = &[
-    Head("General"),
+    Head("config.jade.general"),
     Opt("debug_mode", 0),
     Opt("display_tooltip", 0),
     Opt("display_entities", 0),
@@ -72,7 +87,7 @@ const MOD_PAGE: &[Item] = &[
     Slide("reach_distance", 0, 0.0, 20.0, 0.5, false),
     Opt("perspective_mode", 0),
     Slide("max_position_deviation", 0, 0.0, 1000.0, 1.0, false),
-    Head("Appearance"),
+    Head("config.jade.overlay"),
     Adjust,
     Opt("overlay_x", 1),
     Opt("position", 1),
@@ -82,7 +97,7 @@ const MOD_PAGE: &[Item] = &[
     Slide("scale", 0, 0.2, 2.0, 0.01, false),
     Opt("display_item", 0),
     Opt("animation", 0),
-    Head("Key Binds"),
+    Head("config.jade.key_binds"),
     Key("config"),
     Key("show_overlay"),
     Key("toggle_liquid"),
@@ -90,14 +105,14 @@ const MOD_PAGE: &[Item] = &[
     Key("show_uses"),
     Key("narrate"),
     Key("show_details"),
-    Head("Accessibility"),
+    Head("config.jade.accessibility"),
     Opt("accessibility_plugin", 0),
     Opt("tts_mode", 0),
     Opt("narrate_keys", 0),
     Opt("always_list_mode", 0),
     Slide("text_background_opacity", 0, 0.0, 100.0, 1.0, true),
     Opt("flip_main_hand", 0),
-    Danger("Danger Zone"),
+    Danger("config.jade.danger_zone"),
     Reload,
     Reset,
 ];
@@ -105,7 +120,7 @@ const MOD_PAGE: &[Item] = &[
 /// The plugin options of Jade's own plugins, by WailaClientRegistration's categories. The ranges are VanillaPlugin's
 /// `addConfig`s.
 const PLUGIN_PAGE: &[Item] = &[
-    Head("Core Features"),
+    Head("config.jade.plugin_jade"),
     Opt("object_name", 0),
     Opt("mod_name", 0),
     Opt("mod_name_smaller", 1),
@@ -119,7 +134,7 @@ const PLUGIN_PAGE: &[Item] = &[
     Opt("block_states", 0),
     Opt("block_properties", 0),
     Opt("loot_table", 0),
-    Head("Minecraft - Entity"),
+    Head("config.jade.plugin_minecraft.entity"),
     Opt("entity_health", 0),
     Slide("health_max", 1, 0.0, 200.0, 1.0, false),
     Slide("health_per_line", 1, 5.0, 40.0, 1.0, false),
@@ -144,7 +159,7 @@ const PLUGIN_PAGE: &[Item] = &[
     Opt("pet_armor", 0),
     Opt("pet_armor_mode", 1),
     Opt("item_tooltip", 0),
-    Head("Minecraft - Block"),
+    Head("config.jade.plugin_minecraft.block"),
     Opt("breaking_progress", 0),
     Opt("harvest_tool", 0),
     Opt("harvest_new_line", 1),
@@ -183,7 +198,7 @@ const PLUGIN_PAGE: &[Item] = &[
 
 /// `getConfigListView`: the access providers only with the Accessibility Plugin on.
 const ACCESS_PAGE: &[Item] = &[
-    Head("Accessibility"),
+    Head("config.jade.plugin_jade_access"),
     Opt("access_sign", 0),
     Opt("access_block", 0),
     Opt("access_entity", 0),
@@ -192,57 +207,11 @@ const ACCESS_PAGE: &[Item] = &[
     Opt("access_npc", 0),
 ];
 
-/// The option's `_desc` and `_extra_msg` from the jar's en_us.json (the game's language doesn't load Jade's files).
-fn help(key: &str) -> (&'static str, &'static str) {
-    match key {
-        "display_tooltip" => ("The global switch to enable or disable the tooltip.", ""),
-        "display_mode" => ("The behavior of the tooltip in the usual situation and how the ${SHOW_DETAILS} works.", "toggle,hold,lite"),
-        "display_entities" => ("", "entity"),
-        "display_fluids" => ("", "liquid,water"),
-        "hide_from_tab_list" => ("Hide the tooltip when displaying the player list.", "tab,playerlist"),
-        "hide_from_guis" => ("Hide the tooltip on most GUI displays.", ""),
-        "boss_bar_overlap" => ("", "bossbars,hide,push,down"),
-        "display_item" => ("", "hide,top,centered"),
-        "tts_mode" => ("", "tts,narration,narrate,press,toggle"),
-        "perspective_mode" => ("", "view,origin,position"),
-        "reach_distance" => ("Increase the distance limit to the target.", ""),
-        "item_mod_name" => ("Show which mod is an item from on its tooltip.", "modid"),
-        "overlay_x" | "position" => ("", "top,bottom,left,right,center"),
-        "text_background_opacity" => ("Draw text background on progress bars such as fluid tanks and energy storage.", ""),
-        "flip_main_hand" => ("Mirror tooltip position when main hand is left.", ""),
-        "overlay_alpha" => ("", "transparent,alpha"),
-        "animation" => ("Animate the overlay when it appears and disappears. Morph the box when size changes.", "fade"),
-        "mod_name" => ("", "namespace,modid"),
-        "distance" => ("Show the distance between the player and the target.", ""),
-        "coordinates" => ("Show the position of the target.", "location"),
-        "coordinates_rel" => ("Requires holding Ctrl.", ""),
-        "block_face" => ("Show the face of the block the player touches.", "direction,side"),
-        "registry_name" => ("", "id,advanced,tooltips"),
-        "registry_special" => ("Show special IDs like BlockEntity and Fluid.", ""),
-        "loot_table" => ("Requires OP permission.", ""),
-        "potion_effects" => ("", "potion,status"),
-        "mob_breeding" => ("", "cooldown,cd,allay,duplication"),
-        "next_entity_drop" => ("Show the time until the next entity drop, such as egg or armadillo scute.", "egg,scute,sniffer"),
-        "animal_owner" => ("", "horse,pet"),
-        "pet_armor" => ("Show the name and durability of the pet armor.", "horse,wolf"),
-        "harvest_creative" => ("Show harvest information in creative or spectator mode as well", ""),
-        "tnt_stability" => ("Warn player of special TNT that ignites when hit.", ""),
-        "beehive" => ("", "bees,honey"),
-        "note_block" => ("Show the note and instrument of the note block.", ""),
-        "enchantment_power" => ("Show the enchantment power of the block.", ""),
-        "item_storage" => ("", "inventory,chest"),
-        "storage_detailed" => ("The amount of items to show when ${SHOW_DETAILS} is pressed.", ""),
-        "storage_normal" => ("The amount of items to show when ${SHOW_DETAILS} is not pressed.", ""),
-        "storage_names" => ("The maximum amount of items to show item names instead of just item icons.", ""),
-        "energy_detailed" => ("Only show energy info when ${SHOW_DETAILS} is pressed.", ""),
-        "fluid_detailed" => ("Only show fluid info when ${SHOW_DETAILS} is pressed.", ""),
-        "fluid_storage" => ("", "tank,liquid"),
-        "shelf" => ("", "chiseled,book"),
-        "waxed" => ("Show the waxed state of the block or entity, such as waxed sign.", ""),
-        "accessibility_plugin" => ("Enable accessibility features for displaying and narrating more details. You can then control more details in the Plugin Settings.", ""),
-        "always_list_mode" => ("Always open the plugin config screen in list mode instead of card mode.", ""),
-        _ => ("", ""),
-    }
+/// The option's `_desc` and `_extra_msg` (`gamerule.*.description` for the one that is a game rule in Java).
+fn help(key: &str) -> (String, String) {
+    let Some(lang) = jade::option_lang_key(key) else { return Default::default() };
+    let desc = if lang.starts_with("gamerule.") { format!("{lang}.description") } else { format!("{lang}_desc") };
+    (tr(&desc, ""), tr(&format!("{lang}_extra_msg"), ""))
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -266,6 +235,12 @@ enum Focus {
     None,
     Search,
     Profile(usize),
+    /// A row of the list or a card, by its index in `rows` (the arrows and Tab move it; Enter uses it).
+    Row(usize),
+    /// A section of the navigation column, by its place there.
+    Nav(usize),
+    /// A button of HomeConfigScreen.
+    Home(usize),
 }
 
 /// What ConfirmScreen asks.
@@ -278,8 +253,8 @@ enum Confirm {
 #[derive(Clone, Copy)]
 enum Drag {
     None,
-    /// A slider, by its index in `rows`.
-    Slider(usize),
+    /// A slider, by its index in `rows`, and the track's left edge and width.
+    Slider(usize, [f32; 2]),
     /// The scrollbar, and where on its handle it was taken.
     Bar(f32),
     /// The overlay, and the pointer's offset from its centre (PreviewOptionsScreen.dragOffset).
@@ -308,10 +283,14 @@ struct Row {
     kind: Kind,
     label: String,
     key: &'static str,
-    desc: &'static str,
+    desc: String,
     /// OptionsList.Entry.getMessages, lower case: what the search looks in.
     words: String,
     parent: Option<usize>,
+    /// `secondaryOptions()`: the rows under it.
+    children: Vec<usize>,
+    /// `isSecondary()`: in card mode it lives in its card's popup.
+    secondary: bool,
     depth: u8,
     /// `editIgnoreList`'s button on the row.
     ignore: bool,
@@ -411,6 +390,26 @@ struct Ui {
     /// A mouse button went down on this screen and hasn't come up.
     took_press: bool,
     opened: std::time::Instant,
+    /// OptionsList.DisplayMode.CARD: the plugin page, wide enough, without Always Use List Mode.
+    cards: bool,
+    /// `layoutCards`: each of `shown`'s rectangle, its y from the content's top; no height for what isn't laid out.
+    card_rects: Vec<[f32; 4]>,
+    card_height: f32,
+    /// SecondaryPopup.
+    expanded: Option<usize>,
+    fading: Option<usize>,
+    sticky: bool,
+    pending: Option<(usize, [f32; 2], std::time::Instant)>,
+    popup_alpha: f32,
+    popup_slide: f32,
+    popup_at: std::time::Instant,
+    /// `Minecraft.getLastInputType().isKeyboard()`: what's focused shows as hovered, not what's under the pointer.
+    keyboard: bool,
+    last_mouse: [f32; 2],
+    /// AbstractSliderButton.canChangeValue: Enter on a focused slider lets the arrows move it.
+    slider_keys: bool,
+    /// ToggleButton.pressed: the row whose toggle is held.
+    pressed: Option<usize>,
 }
 
 thread_local! {
@@ -437,7 +436,7 @@ pub fn is_open() -> bool {
 
 /// A page with the preview is up, where `hud` can build the box for it (PreviewOptionsScreen).
 pub fn wants_box() -> bool {
-    UI.with_borrow(|u| u.as_ref().is_some_and(|ui| ui.host == Host::Mod && matches!(ui.page, Page::Mod | Page::Plugins)))
+    UI.with_borrow(|u| u.as_ref().is_some_and(|ui| matches!(ui.page, Page::Mod | Page::Plugins)))
 }
 
 fn new_ui(host: Host) -> Ui {
@@ -461,6 +460,20 @@ fn new_ui(host: Host) -> Ui {
         size: [0.0; 2],
         took_press: false,
         opened: std::time::Instant::now(),
+        cards: false,
+        card_rects: Vec::new(),
+        card_height: 0.0,
+        expanded: None,
+        fading: None,
+        sticky: false,
+        pending: None,
+        popup_alpha: 0.0,
+        popup_slide: 0.0,
+        popup_at: std::time::Instant::now(),
+        keyboard: false,
+        last_mouse: [0.0; 2],
+        slider_keys: false,
+        pressed: None,
     }
 }
 
@@ -469,6 +482,7 @@ pub fn open_in_world(game: &mut Game<'_>) -> bool {
     if !game.native_mod_screen_open(ID) {
         return false;
     }
+    jade::ensure_lang();
     let mut ui = new_ui(Host::Mod);
     ui.preview = game.native_setting(ID, "preview_overlay").is_none_or(|v| v != "false");
     UI.with_borrow_mut(|u| *u = Some(ui));
@@ -476,8 +490,11 @@ pub fn open_in_world(game: &mut Game<'_>) -> bool {
 }
 
 /// The Jade page's button in Options > Mods: HomeConfigScreen over that screen.
-pub fn open_over_options() {
-    UI.with_borrow_mut(|u| *u = Some(new_ui(Host::Options)));
+pub fn open_over_options(game: &Game<'_>) {
+    jade::ensure_lang();
+    let mut ui = new_ui(Host::Options);
+    ui.preview = game.native_setting(ID, "preview_overlay").is_none_or(|v| v != "false");
+    UI.with_borrow_mut(|u| *u = Some(ui));
 }
 
 /// `native_frame`: what the hooks couldn't do, and the screen's end when something else took its place. One borrow a
@@ -521,6 +538,12 @@ pub fn frame(game: &mut Game<'_>) {
             }
             Action::OpenIgnoreLists => jade::open_ignore_lists(game),
         }
+    }
+    // Options draws no hud: with a world behind it, the preview's box is built here (the batch goes unused: `hud` keeps
+    // the box for `draw_preview` while a page wants it).
+    if host == Host::Options && game.player.is_some() && wants_box() {
+        let mut unused = HudBatch::new([1, 1]);
+        jade::hud(game, &mut unused);
     }
 }
 
@@ -611,6 +634,7 @@ struct Builder {
 impl Builder {
     fn push(&mut self, kind: Kind, label: String, key: &'static str, depth: u8) -> &mut Row {
         let (desc, extra) = help(key);
+        let secondary = kind != Kind::Title && depth > 0 && self.primary.is_some();
         let parent = if kind == Kind::Title {
             None
         } else if depth == 0 {
@@ -627,19 +651,22 @@ impl Builder {
             _ if depth == 0 => self.primary = Some(index),
             _ => {}
         }
-        let words = format!("{label} {key} {extra}").to_lowercase();
-        self.rows.push(Row { kind, label, key, desc, words, parent, depth, ignore: false, danger: false });
+        let words = format!("{label} {key} {extra} {desc}").to_lowercase();
+        if let Some(p) = parent {
+            self.rows[p].children.push(index);
+        }
+        self.rows.push(Row { kind, label, key, desc, words, parent, children: Vec::new(), secondary, depth, ignore: false, danger: false });
         &mut self.rows[index]
     }
 
     fn items(&mut self, items: &[Item]) {
         for item in items {
             match *item {
-                Head(label) => {
-                    self.push(Kind::Title, label.to_owned(), "", 0);
+                Head(lang) => {
+                    self.push(Kind::Title, tr(lang, lang), "", 0);
                 }
-                Danger(label) => {
-                    self.push(Kind::Title, label.to_owned(), "", 0).danger = true;
+                Danger(lang) => {
+                    self.push(Kind::Title, tr(lang, lang), "", 0).danger = true;
                 }
                 Opt(key, depth) => {
                     let Some(o) = jade::option(key) else { continue };
@@ -649,24 +676,27 @@ impl Builder {
                         _ if o.values.len() == 2 && o.values[0].0 == "true" && o.values[1].0 == "false" => Kind::Toggle,
                         _ => Kind::Cycle,
                     };
-                    self.push(kind, o.label.to_owned(), o.key, depth).ignore = matches!(key, "display_entities" | "display_blocks");
+                    self.push(kind, jade::option_label(o), o.key, depth).ignore = matches!(key, "display_entities" | "display_blocks");
                 }
                 Slide(key, depth, min, max, step, percent) => {
                     let Some(o) = jade::option(key) else { continue };
-                    self.push(Kind::Slider { min, max, step, percent }, o.label.to_owned(), o.key, depth);
+                    self.push(Kind::Slider { min, max, step, percent }, jade::option_label(o), o.key, depth);
                 }
                 Key(name) => {
                     let Some(i) = jade::KEYS.iter().position(|k| k[0] == name) else { continue };
-                    self.push(Kind::Keybind(i), jade::KEYS[i][1].to_owned(), "", 0);
+                    let label = tr(&format!("key.jade.{name}"), jade::KEYS[i][1]);
+                    // WailaConfigScreen: the two recipe keys say what they do.
+                    let row = self.push(Kind::Keybind(i), label, "", 0);
+                    row.desc = tr(&format!("gui.jade.{name}.desc"), "");
                 }
                 Adjust => {
-                    self.push(Kind::Adjust, "Overlay Position".to_owned(), "", 0);
+                    self.push(Kind::Adjust, tr("config.jade.overlay_pos", "Overlay Position"), "", 0);
                 }
                 Reload => {
-                    self.push(Kind::Reload, "Reload Plugins".to_owned(), "", 0);
+                    self.push(Kind::Reload, tr("config.jade.reload_plugins", "Reload Plugins"), "", 0);
                 }
                 Reset => {
-                    self.push(Kind::Reset, "Reset Settings".to_owned(), "", 0).danger = true;
+                    self.push(Kind::Reset, tr("config.jade.reset_settings", "Reset Settings"), "", 0).danger = true;
                 }
             }
         }
@@ -704,12 +734,12 @@ fn build(game: &Game<'_>, page: Page) -> Vec<Row> {
         }
         // ProfileConfigScreen.createOptions.
         Page::Profiles => {
-            b.push(Kind::Title, "Profiles".to_owned(), "", 0);
-            b.push(Kind::Toggle, "Enabled".to_owned(), "enable_profiles", 0);
+            b.push(Kind::Title, tr("config.jade.profiles", "Profiles"), "", 0);
+            b.push(Kind::Toggle, tr("config.jade.enable_profiles", "Enabled"), "enable_profiles", 0);
             for i in 0..4 {
-                b.push(Kind::Profile(i), format!("#{i}"), "", 0);
+                b.push(Kind::Profile(i), tr(&format!("config.jade.profile.{i}"), &format!("#{i}")), "", 0);
             }
-            b.push(Kind::Title, "Key Binds".to_owned(), "", 0);
+            b.push(Kind::Title, tr("config.jade.key_binds", "Key Binds"), "", 0);
             for name in ["profile.0", "profile.1", "profile.2", "profile.3"] {
                 b.items(&[Key(name)]);
             }
@@ -857,6 +887,9 @@ impl Ui {
         self.binding = None;
         self.drag = Drag::None;
         self.confirm = None;
+        self.cards = self.wants_cards(game);
+        self.reset_popup();
+        self.slider_keys = false;
         self.filter();
         if page == Page::Profiles {
             for (i, field) in self.names.iter_mut().enumerate() {
@@ -872,8 +905,37 @@ impl Ui {
         let text = self.search.text.trim().to_lowercase();
         let n = self.rows.len();
         self.shown.clear();
+        self.reset_popup();
         if text.is_empty() {
             self.shown.extend(0..n);
+        } else if self.cards {
+            // collectSearch in card mode: the cards with a match of their own or among theirs, each under its section,
+            // and a lone card with options opens at once.
+            let words: Vec<&str> = text.split_whitespace().collect();
+            let matches = |row: &Row| words.iter().all(|w| row.words.contains(*w));
+            let results: Vec<usize> = (0..n)
+                .filter(|i| {
+                    let row = &self.rows[*i];
+                    !row.secondary && row.kind != Kind::Title && (matches(row) || row.children.iter().any(|c| matches(&self.rows[*c])))
+                })
+                .collect();
+            let mut last_title = None;
+            let mut shown = Vec::new();
+            for &i in &results {
+                if let Some(title) = self.rows[i].parent.filter(|p| self.rows[*p].kind == Kind::Title)
+                    && last_title != Some(title)
+                {
+                    shown.push(title);
+                    last_title = Some(title);
+                }
+                shown.push(i);
+                shown.extend(self.rows[i].children.iter().copied());
+            }
+            let lone = results.first().copied().filter(|i| results.len() == 1 && !self.rows[*i].children.is_empty());
+            self.shown = shown;
+            if let Some(i) = lone {
+                self.expand(i, true);
+            }
         } else {
             let words: Vec<&str> = text.split_whitespace().collect();
             let mut matched = vec![false; n];
@@ -901,11 +963,437 @@ impl Ui {
             self.shown.extend((0..n).filter(|i| matched[*i]));
         }
         self.scroll = 0.0;
+        self.layout_cards();
     }
 
     fn max_scroll(&self) -> f32 {
         let list = list_rect(self.size);
+        if self.cards {
+            return (self.card_height + 4.0 - list[3]).max(0.0);
+        }
         (self.shown.len() as f32 * ROW + 4.0 - list[3]).max(0.0)
+    }
+
+    /// PluginsConfigScreen.createOptions with OptionsList.setDisplayMode: list mode when asked for, or with room for one
+    /// card a row.
+    fn wants_cards(&self, game: &Game<'_>) -> bool {
+        self.page == Page::Plugins && !jade::on(game, "always_list_mode") && cards_per_row(self.size) > 1.0
+    }
+
+    /// `layoutCards`: the rows of cards, a row as tall as its tallest, sections between them. The popup's rows aren't
+    /// here: `popup_rect` places them.
+    fn layout_cards(&mut self) {
+        self.card_rects.clear();
+        self.card_height = 0.0;
+        if !self.cards {
+            return;
+        }
+        let (left, row_w) = card_span(self.size);
+        let per = cards_per_row(self.size);
+        let card_w = ((row_w - CARD_GAP * (per - 1.0)) / per).floor();
+        let mut y = 0.0;
+        let mut row: Vec<usize> = Vec::new();
+        self.card_rects.resize(self.shown.len(), [0.0; 4]);
+        for i in 0..self.shown.len() {
+            let entry = &self.rows[self.shown[i]];
+            if entry.secondary {
+                continue;
+            }
+            if entry.kind == Kind::Title {
+                if !row.is_empty() {
+                    y = self.place_card_row(&row, left, card_w, y);
+                    row.clear();
+                }
+                self.card_rects[i] = [left, y, row_w, ROW];
+                y += ROW + CARD_GAP;
+            } else {
+                row.push(i);
+                if row.len() as f32 >= per {
+                    y = self.place_card_row(&row, left, card_w, y);
+                    row.clear();
+                }
+            }
+        }
+        if !row.is_empty() {
+            y = self.place_card_row(&row, left, card_w, y);
+        }
+        self.card_height = y + 4.0;
+    }
+
+    /// `placeCardRow`.
+    fn place_card_row(&mut self, row: &[usize], left: f32, card_w: f32, y: f32) -> f32 {
+        let height = row.iter().map(|i| if self.rows[self.shown[*i]].kind == Kind::Toggle { CARD_HEIGHT } else { CARD_HEIGHT_TALL }).fold(0.0, f32::max);
+        for (at, i) in row.iter().enumerate() {
+            self.card_rects[*i] = [left + at as f32 * (card_w + CARD_GAP), y, card_w, height];
+        }
+        y + height + CARD_GAP
+    }
+
+    /// A laid out card's rectangle on the screen, by its place in `shown`. None for what has no place of its own.
+    fn card_rect(&self, at: usize) -> Option<[f32; 4]> {
+        let [x, y, w, h] = *self.card_rects.get(at)?;
+        (h > 0.0).then(|| [x, list_rect(self.size)[1] + 2.0 + CARD_BLEED + y - self.scroll, w, h])
+    }
+
+    /// The card of a row in `rows`.
+    fn card_of(&self, row: usize) -> Option<[f32; 4]> {
+        self.card_rect(self.shown.iter().position(|r| *r == row)?)
+    }
+
+    /// SecondaryPopup.reset.
+    fn reset_popup(&mut self) {
+        self.expanded = None;
+        self.fading = None;
+        self.sticky = false;
+        self.pending = None;
+        self.popup_alpha = 0.0;
+        self.popup_slide = 0.0;
+    }
+
+    /// SecondaryPopup.expand.
+    fn expand(&mut self, row: usize, sticky: bool) {
+        self.expanded = Some(row);
+        self.fading = None;
+        self.popup_alpha = 0.0;
+        self.popup_slide = 0.0;
+        self.sticky = sticky;
+    }
+
+    /// SecondaryPopup.collapse.
+    fn collapse(&mut self) {
+        if self.expanded.is_some() {
+            self.fading = self.expanded.take();
+            self.sticky = false;
+            self.popup_slide = 1.0;
+        }
+    }
+
+    /// SecondaryPopup.effectiveEntry.
+    fn popup_entry(&self) -> Option<usize> {
+        self.expanded.or(self.fading).filter(|r| self.shown.contains(r))
+    }
+
+    /// `layoutSecondaryPopup`: the panel of a card's options, under the card or moved up to fit. Its rows are a row high
+    /// from three pixels in.
+    fn popup_rect(&self, entry: usize) -> Option<[f32; 4]> {
+        let [cx, cy, cw, ch] = self.card_of(entry)?;
+        let count = self.rows[entry].children.len();
+        if count == 0 {
+            return None;
+        }
+        let (left, row_w) = card_span(self.size);
+        let list = list_rect(self.size);
+        let w = row_w.min(cw.max(220.0));
+        let x = cx.min(left + row_w - w).max(left);
+        let h = 6.0 + count as f32 * ROW;
+        let mut y = cy + ch + 6.0;
+        let bottom = list[1] + list[3];
+        if y + h > bottom {
+            y = list[1].max(bottom - h);
+        }
+        Some([x, y, w, h])
+    }
+
+    /// `slideOffset`.
+    fn popup_slide_offset(&self) -> f32 {
+        ((self.popup_slide - 1.0) * 8.0).round()
+    }
+
+    /// A popup row's value widget (`getWidgetZone` in popup mode: `applyPopupWidgets` took ten off its width).
+    fn popup_value(panel: [f32; 4], y: f32) -> [f32; 4] {
+        [panel[0] + panel[2] - 2.0 - 100.0, y + 3.0, 90.0, 20.0]
+    }
+
+    /// SecondaryPopup.isMouseOver: on the card, on the panel, or crossing the gap between them.
+    fn over_popup(&self, entry: usize, m: [f32; 2]) -> bool {
+        let Some([x, y, w, h]) = self.card_of(entry) else { return false };
+        let card = [x - CARD_BLEED, y - CARD_BLEED, w + 2.0 * CARD_BLEED, h + 2.0 * CARD_BLEED];
+        if hit(card, m) {
+            return true;
+        }
+        let Some(panel) = self.popup_rect(entry) else { return false };
+        if hit(panel, m) {
+            return true;
+        }
+        if m[0] < card[0].min(panel[0]) || m[0] >= (card[0] + card[2]).max(panel[0] + panel[2]) {
+            return false;
+        }
+        (m[1] >= card[1] + card[3] && m[1] < panel[1]) || (m[1] >= panel[1] + panel[3] && m[1] < card[1])
+    }
+
+    /// SecondaryPopup.commitPending, tick and OptionsList's collapse when the pointer has left.
+    fn tick_popup(&mut self, game: &Game<'_>, m: [f32; 2]) {
+        if let Some((row, at, when)) = self.pending {
+            if (m[0] - at[0]).abs() > 2.0 || (m[1] - at[1]).abs() > 2.0 {
+                self.pending = None;
+            } else if when.elapsed().as_millis() >= 120 {
+                self.pending = None;
+                click_sound();
+                if self.expanded == Some(row) {
+                    self.collapse();
+                } else {
+                    self.expand(row, false);
+                }
+            }
+        }
+        let fade_ms = if jade::on(game, "debug_mode") { 500.0 } else { 100.0 };
+        let step = self.popup_at.elapsed().as_secs_f32() * 1000.0 / fade_ms;
+        self.popup_at = std::time::Instant::now();
+        if self.expanded.is_some() {
+            self.popup_alpha = (self.popup_alpha + step).clamp(0.0, 1.0);
+            self.popup_slide = (self.popup_slide + step).clamp(0.0, 1.0);
+            self.fading = None;
+        } else if self.fading.is_some() {
+            self.popup_alpha = (self.popup_alpha - step).clamp(0.0, 1.0);
+            if self.popup_alpha <= 0.0 {
+                self.fading = None;
+            }
+        }
+        if let Some(entry) = self.expanded
+            && !self.sticky
+        {
+            let inside = self.keyboard && matches!(self.focus, Focus::Row(r) if r == entry || self.rows[r].parent == Some(entry));
+            if !inside && !self.over_popup(entry, m) {
+                self.collapse();
+            }
+        }
+    }
+
+    /// `showOnTop`.
+    fn show_on_top(&mut self, row: usize) {
+        let Some(at) = self.shown.iter().position(|r| *r == row) else { return };
+        let top = if self.cards { self.card_rects.get(at).map_or(0.0, |r| r[1]) + CARD_BLEED } else { ROW * at as f32 + 1.0 };
+        self.scroll = top.clamp(0.0, self.max_scroll());
+    }
+
+    /// `scrollToEntry`: the row into view (a popup's: its card).
+    fn scroll_to(&mut self, row: usize) {
+        let list = list_rect(self.size);
+        let (top, height) = if self.cards {
+            let anchor = if self.rows[row].secondary { self.rows[row].parent.unwrap_or(row) } else { row };
+            let Some(at) = self.shown.iter().position(|r| *r == anchor) else { return };
+            let Some(r) = self.card_rects.get(at) else { return };
+            (r[1], r[3] + 2.0 * (2.0 + CARD_BLEED))
+        } else {
+            let Some(at) = self.shown.iter().position(|r| *r == row) else { return };
+            (at as f32 * ROW, ROW + 4.0)
+        };
+        if top < self.scroll {
+            self.scroll = top;
+        } else if top + height > self.scroll + list[3] {
+            self.scroll = top + height - list[3];
+        }
+        self.scroll = self.scroll.clamp(0.0, self.max_scroll());
+    }
+
+    /// `changeFocus` with the keyboard: on a row, its popup opened or another closed (OptionsList.setSelected), in view.
+    fn focus_row(&mut self, row: usize) {
+        self.keyboard = true;
+        self.slider_keys = false;
+        self.focus = match self.rows[row].kind {
+            Kind::Profile(i) => {
+                self.names[i].caret = self.names[i].text.chars().count();
+                Focus::Profile(i)
+            }
+            _ => Focus::Row(row),
+        };
+        if self.cards {
+            let entry = &self.rows[row];
+            let target = if entry.secondary { entry.parent } else if !entry.children.is_empty() { Some(row) } else { None };
+            match target {
+                Some(t) if self.expanded != Some(t) => self.expand(t, false),
+                None => self.collapse(),
+                _ => {}
+            }
+        }
+        self.scroll_to(row);
+    }
+
+    /// The row the focus is on (a profile's name is on its row).
+    fn focused_row(&self) -> Option<usize> {
+        match self.focus {
+            Focus::Row(r) => Some(r),
+            Focus::Profile(i) => self.rows.iter().position(|r| r.kind == Kind::Profile(i)),
+            _ => None,
+        }
+    }
+
+    /// What the keyboard can land on: `focusableWidgets`, in the order shown.
+    fn focusable(&self, game: &Game<'_>, row: usize) -> bool {
+        let entry = &self.rows[row];
+        entry.kind != Kind::Title && self.row_enabled(game, entry)
+    }
+
+    /// `nextTabFocusPath`: every widget in order, a popup's among them.
+    fn tab(&mut self, game: &Game<'_>, forward: bool) {
+        let order: Vec<usize> = self.shown.iter().copied().filter(|r| self.focusable(game, *r)).collect();
+        if order.is_empty() {
+            return;
+        }
+        let at = self.focused_row().and_then(|r| order.iter().position(|o| *o == r));
+        let next = match (at, forward) {
+            (Some(i), true) => i + 1,
+            (Some(0), false) => return self.focus = Focus::Search,
+            (Some(i), false) => i - 1,
+            (None, true) => 0,
+            (None, false) => order.len() - 1,
+        };
+        match order.get(next) {
+            Some(row) => self.focus_row(*row),
+            None => self.focus = Focus::Search,
+        }
+    }
+
+    /// The arrows on the list: up and down the rows; left to the navigation.
+    fn arrow_list(&mut self, game: &Game<'_>, key: &str) {
+        let order: Vec<usize> = self.shown.iter().copied().filter(|r| self.focusable(game, *r)).collect();
+        let at = self.focused_row().and_then(|r| order.iter().position(|o| *o == r));
+        match key {
+            "key.keyboard.down" => {
+                let next = at.map_or(0, |i| i + 1);
+                if let Some(row) = order.get(next) {
+                    self.focus_row(*row);
+                }
+            }
+            "key.keyboard.up" => match at {
+                Some(0) | None => self.focus = Focus::Search,
+                Some(i) => self.focus_row(order[i - 1]),
+            },
+            "key.keyboard.left" => self.to_nav(),
+            _ => {}
+        }
+    }
+
+    /// `nextCardFocusPath`: left and right through the cards, up and down the column; off the left to the navigation.
+    fn arrow_cards(&mut self, game: &Game<'_>, key: &str) {
+        let cards: Vec<usize> = (0..self.shown.len())
+            .filter(|i| {
+                let row = self.shown[*i];
+                !self.rows[row].secondary && self.focusable(game, row) && self.card_rects.get(*i).is_some_and(|r| r[3] > 0.0)
+            })
+            .collect();
+        let anchor = self.focused_row().map(|r| if self.rows[r].secondary { self.rows[r].parent.unwrap_or(r) } else { r });
+        let at = anchor.and_then(|a| cards.iter().position(|i| self.shown[*i] == a));
+        let Some(at) = at else {
+            if let Some(first) = cards.first() {
+                self.focus_row(self.shown[*first]);
+            }
+            return;
+        };
+        let target = match key {
+            "key.keyboard.right" => cards.get(at + 1).copied(),
+            "key.keyboard.left" => match at.checked_sub(1) {
+                Some(i) => cards.get(i).copied(),
+                None => return self.to_nav(),
+            },
+            _ => {
+                // The rows of cards, and the same column of the next that has one.
+                let mut rows: Vec<Vec<usize>> = Vec::new();
+                let mut last_y = f32::MIN;
+                for i in &cards {
+                    let y = self.card_rects[*i][1];
+                    if rows.is_empty() || y != last_y {
+                        rows.push(Vec::new());
+                        last_y = y;
+                    }
+                    if let Some(row) = rows.last_mut() {
+                        row.push(*i);
+                    }
+                }
+                let here = cards[at];
+                let Some((row, column)) = rows.iter().enumerate().find_map(|(r, cols)| cols.iter().position(|c| *c == here).map(|c| (r, c))) else { return };
+                let up = key == "key.keyboard.up";
+                let mut r = row;
+                loop {
+                    r = if up {
+                        match r.checked_sub(1) {
+                            Some(r) => r,
+                            None => break None,
+                        }
+                    } else {
+                        r + 1
+                    };
+                    match rows.get(r) {
+                        None => break None,
+                        Some(cols) => {
+                            if let Some(c) = cols.get(column) {
+                                break Some(*c);
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        if let Some(i) = target {
+            self.focus_row(self.shown[i]);
+        }
+    }
+
+    /// `OptionsNav.getCurrentEntry`: the focus on the section it is in.
+    fn to_nav(&mut self) {
+        let titles = self.titles();
+        if titles.is_empty() {
+            return;
+        }
+        let current = self.focused_row().map(|r| self.root_of(r));
+        self.focus = Focus::Nav(current.and_then(|c| titles.iter().position(|t| *t == c)).unwrap_or(0));
+        self.keyboard = true;
+    }
+
+    /// Enter or Space on a row: what a click on its widget does.
+    fn use_row(&mut self, game: &Game<'_>, row_index: usize, shift: bool) {
+        let kind = self.rows[row_index].kind;
+        let key = self.rows[row_index].key;
+        match kind {
+            Kind::Toggle => {
+                click_sound();
+                if let Some(o) = jade::option(key) {
+                    jade::step_option(game, o, false);
+                } else {
+                    // A plugin's option (register_option).
+                    let now = jade::on(game, key);
+                    game.native_set_setting(ID, key, if now { "false" } else { "true" });
+                    jade::settings_changed();
+                }
+            }
+            Kind::Cycle | Kind::Theme | Kind::Style => {
+                click_sound();
+                if let Some(o) = jade::option(key) {
+                    jade::step_option(game, o, shift);
+                }
+            }
+            Kind::Keybind(i) => {
+                click_sound();
+                self.binding = Some(i);
+            }
+            // WailaConfigScreen's `overlay_pos.adjust`: PreviewOptionsScreen.startAdjustingPosition.
+            Kind::Adjust => {
+                click_sound();
+                self.adjusting = true;
+            }
+            Kind::Reload => {
+                click_sound();
+                jade::reload_plugins();
+                self.rows = build(game, self.page);
+                self.filter();
+            }
+            Kind::Reset => {
+                click_sound();
+                self.confirm = Some(Confirm::Reset);
+            }
+            Kind::Slider { .. } | Kind::Title | Kind::Profile(_) => {}
+        }
+    }
+
+    /// The arrows on a focused slider that Enter let go (AbstractSliderButton.keyPressed): a step.
+    fn step_slider(&self, game: &Game<'_>, row_index: usize, by: f32) {
+        let row = &self.rows[row_index];
+        let Kind::Slider { min, max, step, .. } = row.kind else { return };
+        let v = (jade::num(game, row.key) as f32 + by * step).clamp(min, max);
+        let text = if step >= 1.0 { format!("{}", v.round() as i64) } else { jade::trim2(f64::from(v)) };
+        jade::set_live(game, row.key, text);
+        jade::commit_live(game, row.key);
+        jade::settings_changed();
     }
 
     /// The section a shown row is in (`Entry.root`), as an index in `rows`.
@@ -919,6 +1407,11 @@ impl Ui {
     /// `currentTitle`: the section of the row under the pointer, or else of the list's top.
     fn current_title(&self, mouse: [f32; 2]) -> Option<usize> {
         let list = list_rect(self.size);
+        if self.cards {
+            let top = hit(list, mouse).then(|| (0..self.shown.len()).find(|i| self.card_rect(*i).is_some_and(|r| hit([r[0] - CARD_BLEED, r[1] - CARD_BLEED, r[2] + 2.0 * CARD_BLEED, r[3] + 2.0 * CARD_BLEED], mouse)))).flatten();
+            let top = top.or_else(|| (0..self.shown.len()).find(|i| self.card_rect(*i).is_some_and(|r| r[1] + r[3] > list[1])));
+            return top.map(|i| self.root_of(self.shown[i]));
+        }
         let at = if hit(list, mouse) { mouse[1] } else { list[1] };
         let index = ((at - list[1] - 2.0 + self.scroll) / ROW).max(0.0) as usize;
         self.shown.get(index.min(self.shown.len().saturating_sub(1))).map(|r| self.root_of(*r))
@@ -1009,7 +1502,7 @@ impl Ui {
     /// A slider or a dragged overlay let go (mouseReleased).
     fn let_go(&mut self, game: &Game<'_>) {
         match self.drag {
-            Drag::Slider(row) => {
+            Drag::Slider(row, _) => {
                 jade::commit_live(game, self.rows[row].key);
                 jade::settings_changed();
             }
@@ -1017,16 +1510,14 @@ impl Ui {
             Drag::None | Drag::Bar(_) => {}
         }
         self.drag = Drag::None;
+        self.pressed = None;
     }
 
     /// SliderOptionValue.Slider.applyValue.
-    fn slide_to(&self, game: &Game<'_>, row: usize, x: f32) {
+    fn slide_to(&self, game: &Game<'_>, row: usize, [track_x, track_w]: [f32; 2], x: f32) {
         let row = &self.rows[row];
         let Kind::Slider { min, max, step, .. } = row.kind else { return };
-        let list = list_rect(self.size);
-        let (left, width) = row_span(list);
-        let value_rect = row_rects(left, width, 0.0, false).value;
-        let t = ui::slider_value(value_rect[0], value_rect[2], x);
+        let t = ui::slider_value(track_x, track_w, x);
         let v = min + (max - min) * t;
         let v = (v / step).round() * step;
         let text = if step >= 1.0 { format!("{}", v.round() as i64) } else { jade::trim2(f64::from(v)) };
@@ -1035,9 +1526,23 @@ impl Ui {
 
     fn draw(&mut self, game: &Game<'_>, batch: &mut HudBatch, mouse: [f32; 2]) {
         self.size = [batch.width, batch.height];
+        // The window's size, or Always Use List Mode, can change the mode.
+        let cards = self.wants_cards(game);
+        if cards != self.cards {
+            self.cards = cards;
+            self.filter();
+        }
+        self.layout_cards();
+        if mouse != self.last_mouse {
+            self.last_mouse = mouse;
+            self.keyboard = false;
+        }
+        if self.cards {
+            self.tick_popup(game, mouse);
+        }
         // Slider, scrollbar and overlay drags, each frame: the mouse hooks say press and release.
         match self.drag {
-            Drag::Slider(row) => self.slide_to(game, row, mouse[0]),
+            Drag::Slider(row, track) => self.slide_to(game, row, track, mouse[0]),
             Drag::Bar(grab) => {
                 let list = list_rect(self.size);
                 let most = self.max_scroll();
@@ -1071,11 +1576,11 @@ impl Ui {
         if self.adjusting {
             // PreviewOptionsScreen.extractRenderState.
             game.native_fill(batch, [0.0, 0.0, w, h], 0x8080_8080);
-            let text = "Press ESC or click the center to exit";
-            let tw = game.native_text_width(text);
+            let text = tr("config.jade.overlay_pos.exit", "Press ESC or click the center to exit");
+            let tw = game.native_text_width(&text);
             let (tx, ty) = (((w - tw) / 2.0).floor(), (h / 2.0).floor() - 7.0);
             game.native_fill(batch, [tx - 4.0, ty - 4.0, tw + 8.0, 17.0], 0x8800_0000);
-            game.native_text(batch, text, [tx, ty], 0xFFFFFF, false);
+            game.native_text(batch, &text, [tx, ty], 0xFFFFFF, false);
         }
         self.draw_preview(game, batch, mouse);
         if self.adjusting {
@@ -1110,7 +1615,7 @@ impl Ui {
         };
         let Some(shown) = shown else { return };
         let rect = jade::box_rect(game, [batch.width, batch.height], shown, self.adjusting);
-        let forced = self.adjusting || matches!(self.drag, Drag::Slider(row) if self.rows[row].key == "scale");
+        let forced = self.adjusting || matches!(self.drag, Drag::Slider(row, _) if self.rows[row].key == "scale");
         let draw = forced || (self.preview && self.confirm.is_none() && !hit(rect, mouse));
         if draw {
             jade::draw_box(game, batch, shown, self.adjusting);
@@ -1122,11 +1627,11 @@ impl Ui {
         let [w, h] = self.size;
         game.native_fill(batch, [0.0, 0.0, w, h], 0xD000_0000);
         let (title, message, yes) = match confirm {
-            Confirm::Reset => ("Reset Settings".to_owned(), "Are you sure you wish to reset settings?".to_owned(), "Reset"),
+            Confirm::Reset => (tr("config.jade.reset_settings", "Reset Settings"), tr("config.jade.reset_settings.confirm", "Are you sure you wish to reset settings?"), tr("controls.reset", "Reset")),
             Confirm::SaveProfile(i) => (
-                "Save as Profile".to_owned(),
-                format!("By continuing, you will save the current settings as profile {}. This will overwrite the existing profile. (Key binds will not be saved)", self.profile_title(i)),
-                "Continue",
+                tr("gui.jade.save_profile.title", "Save as Profile"),
+                tr("gui.jade.save_profile.message", "By continuing, you will save the current settings as profile %s. This will overwrite the existing profile. (Key binds will not be saved)").replace("%s", &self.profile_title(i)),
+                tr("gui.continue", "Continue"),
             ),
         };
         let cy = (h / 2.0).floor();
@@ -1139,7 +1644,7 @@ impl Ui {
         let (yes_rect, no_rect) = confirm_rects(self.size);
         let atlas = &game.gui.atlas;
         ui::button(batch, atlas, yes_rect[0], yes_rect[1], yes_rect[2], yes_rect[3], &Text::literal(yes), true, hit(yes_rect, mouse));
-        ui::button(batch, atlas, no_rect[0], no_rect[1], no_rect[2], no_rect[3], &Text::literal("Cancel"), true, hit(no_rect, mouse));
+        ui::button(batch, atlas, no_rect[0], no_rect[1], no_rect[2], no_rect[3], &Text::literal(tr("gui.cancel", "Cancel")), true, hit(no_rect, mouse));
     }
 
     /// HomeConfigScreen.
@@ -1151,22 +1656,22 @@ impl Ui {
             batch.text_styled(&game.gui.atlas, &jade::rich(text), ((w - tw) / 2.0).floor(), y, rgba(0xE0, 0xE0, 0xE0, 255), true);
         };
         let mid = (h / 2.0).floor();
-        center(game, &mut *batch, "§fJade Configuration", mid - 62.0);
-        center(game, &mut *batch, "a §fUI enhancement§r mod that", mid - 44.0);
-        center(game, &mut *batch, "§fdisplays information§r about what §fyou are looking at§r.", mid - 32.0);
+        center(game, &mut *batch, &format!("§f{}", tr("gui.jade.configuration", "Jade Configuration")), mid - 62.0);
+        center(game, &mut *batch, &tr("gui.jade.configuration.desc1", "a §fUI enhancement§r mod that"), mid - 44.0);
+        center(game, &mut *batch, &tr("gui.jade.configuration.desc2", "§fdisplays information§r about what §fyou are looking at§r."), mid - 32.0);
         let [mod_settings, plugin_settings, profiles, done] = home_rects(self.size);
-        let button = |batch: &mut HudBatch, r: [f32; 4], label: &str| {
-            ui::button(batch, atlas, r[0], r[1], r[2], r[3], &Text::literal(label), true, hit(r, m));
+        let button = |batch: &mut HudBatch, r: [f32; 4], label: &str, focus: usize| {
+            ui::button(batch, atlas, r[0], r[1], r[2], r[3], &Text::literal(label), true, hit(r, m) || self.focus == Focus::Home(focus));
         };
-        button(&mut *batch, mod_settings, "Mod Settings");
-        button(&mut *batch, plugin_settings, "Plugin Settings");
-        button(&mut *batch, done, "Done");
+        button(&mut *batch, mod_settings, &tr("gui.jade.jade_settings", "Mod Settings"), 0);
+        button(&mut *batch, plugin_settings, &tr("gui.jade.plugin_settings", "Plugin Settings"), 1);
+        button(&mut *batch, done, &tr("gui.done", "Done"), 3);
         // The profile button: paper on a button (HomeConfigScreen.profileIcon), its name a tooltip.
-        button(&mut *batch, profiles, "");
+        button(&mut *batch, profiles, "", 2);
         game.native_item(batch, "minecraft:paper", [profiles[0] + 2.0, profiles[1] + 2.0], 16.0);
-        center(game, &mut *batch, "Made with §c\u{2764}§r by Snownee", h - 18.0);
+        center(game, &mut *batch, &tr("gui.jade.by", "Made with %s by Snownee").replace("%s", "§c\u{2764}§r"), h - 18.0);
         if hit(profiles, m) {
-            let lines = vec![(Text::literal("Configuration Profile Settings"), u32::MAX)];
+            let lines = vec![(Text::literal(tr("gui.jade.profile_settings", "Configuration Profile Settings")), u32::MAX)];
             game.draw_tooltip_lines(batch, &lines, m[0], m[1]);
         }
     }
@@ -1182,26 +1687,30 @@ impl Ui {
         let (left, width) = row_span(list);
         let start = batch.vertices.len();
         let mut tooltip: Option<(&Row, [f32; 2])> = None;
-        for (i, row_index) in self.shown.iter().enumerate() {
-            let y = list[1] + 2.0 - self.scroll + i as f32 * ROW;
-            if y + ROW < list[1] || y > list[1] + list[3] {
-                continue;
-            }
-            let row = &self.rows[*row_index];
-            let hover = hit(list, m) && m[1] >= y && m[1] < y + ROW;
-            // extractSelection.
-            if hover && row.kind != Kind::Title {
-                game.native_fill(batch, [list[0], y, list[2], ROW], 0x33FF_FFFF);
-            }
-            self.draw_row(game, batch, row, *row_index, left, width, y, m);
-            if hover && m[0] < row_rects(left, width, y, false).value[0] {
-                tooltip = Some((row, m));
+        if self.cards {
+            tooltip = self.draw_cards(game, batch, m);
+        } else {
+            for (i, row_index) in self.shown.iter().enumerate() {
+                let y = list[1] + 2.0 - self.scroll + i as f32 * ROW;
+                if y + ROW < list[1] || y > list[1] + list[3] {
+                    continue;
+                }
+                let row = &self.rows[*row_index];
+                let hover = if self.keyboard { self.focused_row() == Some(*row_index) } else { hit(list, m) && m[1] >= y && m[1] < y + ROW };
+                // extractSelection.
+                if hover && row.kind != Kind::Title {
+                    game.native_fill(batch, [list[0], y, list[2], ROW], 0x33FF_FFFF);
+                }
+                self.draw_row(game, batch, row, *row_index, left, width, y, m);
+                if hover && !self.keyboard && m[0] < row_rects(left, width, y, false).value[0] {
+                    tooltip = Some((row, m));
+                }
             }
         }
         if self.shown.is_empty() {
-            let text = "No results :(";
-            let tw = game.native_text_width(text);
-            game.native_text(batch, text, [list[0] + ((list[2] - tw) / 2.0).floor(), list[1] + 10.0], 0xAAAAAA, true);
+            let text = tr("gui.jade.no_results", "No results :(");
+            let tw = game.native_text_width(&text);
+            game.native_text(batch, &text, [list[0] + ((list[2] - tw) / 2.0).floor(), list[1] + 10.0], 0xAAAAAA, true);
         }
         batch.clip_since(start, list[0], list[1], list[0] + list[2], list[1] + list[3]);
         // extractListSeparators.
@@ -1217,17 +1726,17 @@ impl Ui {
             ui::nine_slice(batch, atlas, "gui/sprites/widget/scroller", bar_x, y.floor(), 6.0, handle, u32::MAX);
         }
         let done = done_rect(self.size);
-        ui::button(batch, atlas, done[0], done[1], done[2], done[3], &Text::literal("Done"), true, hit(done, m));
+        ui::button(batch, atlas, done[0], done[1], done[2], done[3], &Text::literal(tr("gui.done", "Done")), true, hit(done, m));
         if self.has_preview_button(game) {
             let r = preview_rect(self.size);
-            let label = Text::literal("Preview: ").append(if self.preview { Text::colored("On", ON_COLOR) } else { Text::colored("Off", OFF_COLOR) });
+            let label = Text::literal(format!("{}: ", tr("gui.jade.preview", "Preview"))).append(on_off(self.preview));
             ui::button(batch, atlas, r[0], r[1], r[2], r[3], &label, true, hit(r, m));
         }
         // BaseOptionsScreen.extractRenderState: a row's description by its title, with its key under Shift.
         if let Some((row, at)) = tooltip {
             let mut lines: Vec<(Text, u32)> = Vec::new();
             if !row.desc.is_empty() {
-                for line in wrap(game, &fill_variables(game, row.desc), 255.0) {
+                for line in wrap(game, &fill_variables(game, &row.desc), 255.0) {
                     lines.push((Text::literal(line), u32::MAX));
                 }
             }
@@ -1243,7 +1752,162 @@ impl Ui {
 
     /// The Preview button: only over a level, with a page that has the preview.
     fn has_preview_button(&self, game: &Game<'_>) -> bool {
-        self.host == Host::Mod && game.player.is_some() && matches!(self.page, Page::Mod | Page::Plugins)
+        game.player.is_some() && matches!(self.page, Page::Mod | Page::Plugins)
+    }
+
+    /// OptionsList.extractListItems in card mode: the sections and cards, then the open popup over them. What the
+    /// tooltip is of, when the pointer is on a title (BaseOptionsScreen.extractRenderState).
+    fn draw_cards(&self, game: &Game<'_>, batch: &mut HudBatch, m: [f32; 2]) -> Option<(&Row, [f32; 2])> {
+        let list = list_rect(self.size);
+        let atlas = &game.gui.atlas;
+        let entry = self.popup_entry();
+        let panel = entry.and_then(|e| self.popup_rect(e));
+        let on_panel = !self.keyboard && panel.is_some_and(|p| hit(p, m));
+        let focused = self.focused_row().map(|r| if self.rows[r].secondary { self.rows[r].parent.unwrap_or(r) } else { r });
+        let mut tooltip = None;
+        for (at, row_index) in self.shown.iter().enumerate() {
+            let Some(rect) = self.card_rect(at) else { continue };
+            let [x, y, w, h] = rect;
+            if y + h + CARD_BLEED < list[1] || y - CARD_BLEED > list[1] + list[3] {
+                continue;
+            }
+            let row = &self.rows[*row_index];
+            if row.kind == Kind::Title {
+                let label = if row.danger { Text::colored(row.label.as_str(), 0xFF5555) } else { Text::literal(row.label.as_str()) };
+                let tw = game.native_text_width(&row.label);
+                batch.text_styled(atlas, &label, x + ((w - tw) / 2.0).floor(), y + 9.0, rgba(255, 255, 255, 255), true);
+                continue;
+            }
+            let over = hit(list, m) && !on_panel && hit([x - CARD_BLEED, y - CARD_BLEED, w + 2.0 * CARD_BLEED, h + 2.0 * CARD_BLEED], m);
+            let hovered = if self.keyboard { focused == Some(*row_index) } else { over };
+            self.draw_card(game, batch, row, *row_index, rect, hovered, m);
+            let title_x = x + 2.0 + 6.0;
+            if over && !self.keyboard && m[0] >= title_x && m[0] < title_x + game.native_text_width(&row.label) && m[1] < y + h - 10.0 {
+                tooltip = Some((row, m));
+            }
+        }
+        if let (Some(entry), Some(panel)) = (entry, panel) {
+            let on_row = self.draw_popup(game, batch, entry, panel, m);
+            if on_row.is_some() {
+                tooltip = on_row;
+            }
+        }
+        tooltip
+    }
+
+    /// `extractCardContent`.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_card(&self, game: &Game<'_>, batch: &mut HudBatch, row: &Row, row_index: usize, [x, y, w, h]: [f32; 4], hovered: bool, m: [f32; 2]) {
+        let atlas = &game.gui.atlas;
+        let white = rgba(255, 255, 255, 255);
+        let expandable = !row.children.is_empty();
+        draw_card_background(game, batch, [x, y, w, h], expandable, hovered);
+        // The entry's content: two pixels in (`CONTENT_PADDING`).
+        let (cx, cy, cw, ch) = (x + 2.0, y + 2.0, w - 4.0, h - 4.0);
+        let text_x = cx + 6.0;
+        if row.kind == Kind::Toggle {
+            // The title on up to two lines, the toggle at the right, both about the middle.
+            let mid = cy + (ch / 2.0).floor();
+            let toggle = [cx + cw - TOGGLE_W - 4.0, mid - (TOGGLE_H / 2.0).floor()];
+            let most = toggle[0] - 4.0 - text_x;
+            let lines = wrap(game, &row.label, most);
+            if lines.len() <= 1 {
+                game.native_text(batch, &row.label, [text_x, mid - 4.0], 0xFFFFFF, true);
+            } else {
+                game.native_text(batch, &lines[0], [text_x, mid - 9.0], 0xFFFFFF, true);
+                let rest = Text::literal(lines[1..].join(" "));
+                ui::scrolling_text(batch, atlas, &rest, text_x, text_x + most, mid, mid + 9.0, mid + 1.0, white);
+            }
+            let state = if self.pressed == Some(row_index) {
+                ToggleState::Pressed
+            } else if !self.keyboard && hit([toggle[0], toggle[1], TOGGLE_W, TOGGLE_H], m) {
+                ToggleState::Hovered
+            } else if self.keyboard && self.focused_row() == Some(row_index) {
+                ToggleState::Focused
+            } else {
+                ToggleState::Normal
+            };
+            draw_toggle(game, batch, toggle, jade::on(game, row.key), state);
+        } else {
+            let label = Text::literal(row.label.as_str());
+            ui::scrolling_text(batch, atlas, &label, text_x, cx + cw - 8.0, cy + 2.0, cy + 15.0, cy + 4.0, white);
+            let value = [cx + 4.0, cy + ch - 2.0 - 20.0, cw - 8.0, 20.0];
+            let hover = if self.keyboard { self.focused_row() == Some(row_index) } else { hit(value, m) };
+            self.draw_value(game, batch, row, row_index, value, hover, self.row_enabled(game, row));
+        }
+        if expandable {
+            // card_arrow.png, a third of whose rows have anything on them.
+            let (ax, ay) = (x + ((w - 15.0) / 2.0).floor(), y + h + CARD_BLEED - 15.0 - 2.0);
+            game.native_fill(batch, [ax + 5.0, ay + 12.0, 5.0, 1.0], 0xC0FF_FFFF);
+            game.native_fill(batch, [ax + 6.0, ay + 13.0, 3.0, 1.0], 0xC0FF_FFFF);
+            game.native_fill(batch, [ax + 7.0, ay + 14.0, 1.0, 1.0], 0xC0FF_FFFF);
+        }
+    }
+
+    /// `popup_background`, and the card's options on it as rows, fading in and sliding down together. The row whose title
+    /// the pointer is on.
+    fn draw_popup(&self, game: &Game<'_>, batch: &mut HudBatch, entry: usize, [px, py, pw, ph]: [f32; 4], m: [f32; 2]) -> Option<(&Row, [f32; 2])> {
+        let atlas = &game.gui.atlas;
+        let slide = self.popup_slide_offset();
+        let start = batch.vertices.len();
+        let (bx, by, bw, bh) = (px - CARD_BLEED, py - CARD_BLEED + slide, pw + 2.0 * CARD_BLEED, ph + 2.0 * CARD_BLEED);
+        game.native_fill(batch, [bx, by, bw, 1.0], 0xA59F_C8F0);
+        game.native_fill(batch, [bx, by + bh - 1.0, bw, 1.0], 0xA59F_C8F0);
+        game.native_fill(batch, [bx, by + 1.0, 1.0, bh - 2.0], 0xA59F_C8F0);
+        game.native_fill(batch, [bx + bw - 1.0, by + 1.0, 1.0, bh - 2.0], 0xA59F_C8F0);
+        game.native_fill(batch, [bx + 1.0, by + 1.0, bw - 2.0, bh - 2.0], 0xD71C_222E);
+        let mut tooltip = None;
+        for (k, row_index) in self.rows[entry].children.iter().enumerate() {
+            let row = &self.rows[*row_index];
+            let y = py + 3.0 + slide + k as f32 * ROW;
+            let value = Self::popup_value([px, py, pw, ph], y);
+            let label_x = px + 2.0 + 10.0;
+            let enabled = self.row_enabled(game, row);
+            let label = if enabled { Text::literal(row.label.as_str()) } else { Text::colored(row.label.as_str(), 0xAAAAAA) };
+            ui::scrolling_text(batch, atlas, &label, label_x, value[0] - 4.0, y, y + ROW, y + 9.0, rgba(255, 255, 255, 255));
+            let hover = if self.keyboard { self.focused_row() == Some(*row_index) } else { hit(value, m) };
+            self.draw_value(game, batch, row, *row_index, value, hover, enabled);
+            if !self.keyboard && hit([px, y, pw, ROW], m) && m[0] < value[0] {
+                tooltip = Some((row, m));
+            }
+        }
+        // SecondaryPopup.applyAlpha.
+        if self.popup_alpha < 1.0 {
+            for v in &mut batch.vertices[start..] {
+                let a = ((v.color >> 24) as f32 * self.popup_alpha) as u32;
+                v.color = (v.color & 0x00FF_FFFF) | (a << 24);
+            }
+        }
+        tooltip
+    }
+
+    /// A row's widget in its rectangle (`mainWidget`).
+    #[allow(clippy::too_many_arguments)]
+    fn draw_value(&self, game: &Game<'_>, batch: &mut HudBatch, row: &Row, row_index: usize, [vx, vy, vw, vh]: [f32; 4], hover: bool, enabled: bool) {
+        let atlas = &game.gui.atlas;
+        match row.kind {
+            Kind::Slider { min, max, percent, .. } => {
+                let value = jade::num(game, row.key) as f32;
+                let t = if max > min { ((value - min) / (max - min)).clamp(0.0, 1.0) } else { 0.0 };
+                let text = if percent { format!("{}%", value.round() as i64) } else { jade::trim2(f64::from(value)) };
+                let dragging = matches!(self.drag, Drag::Slider(r, _) if r == row_index) || (self.slider_keys && self.focused_row() == Some(row_index));
+                ui::slider(batch, atlas, vx, vy, vw, &Text::literal(text), t, hover, true, dragging);
+            }
+            Kind::Toggle => ui::button(batch, atlas, vx, vy, vw, vh, &on_off(jade::on(game, row.key)), true, hover),
+            Kind::Cycle | Kind::Theme | Kind::Style => {
+                let text = jade::option(row.key).map_or_else(String::new, |o| jade::value_label(game, o));
+                ui::button(batch, atlas, vx, vy, vw, vh, &Text::literal(text), enabled, enabled && hover);
+            }
+            Kind::Keybind(i) => {
+                let name = key_label(game, jade::KEYS[i][0]);
+                let text = if self.binding == Some(i) { Text::colored(format!("> {name} <"), 0xFFFF55) } else { Text::literal(name) };
+                ui::button(batch, atlas, vx, vy, vw, vh, &text, enabled, enabled && hover);
+            }
+            Kind::Adjust => ui::button(batch, atlas, vx, vy, vw, vh, &Text::literal(tr("config.jade.overlay_pos.adjust", "Adjust...")), true, hover),
+            Kind::Reload => ui::button(batch, atlas, vx, vy, vw, vh, &Text::literal(tr("config.jade.reload_plugins.button", "Reload")), true, hover),
+            Kind::Reset => ui::button(batch, atlas, vx, vy, vw, vh, &Text::colored(tr("controls.reset", "Reset"), 0xFF5555), true, hover),
+            Kind::Title | Kind::Profile(_) => {}
+        }
     }
 
     fn bar_height(&self, list: [f32; 4], most: f32) -> f32 {
@@ -1268,6 +1932,9 @@ impl Ui {
             let y = nav[1] + i as f32 * NAV_ROW - self.nav_scroll;
             let label = &self.rows[*row].label;
             // OptionsNav.Entry.extractContent.
+            if self.focus == Focus::Nav(i) {
+                game.native_fill(batch, [0.0, y, NAV_W - 2.0, NAV_ROW], 0x33FF_FFFF);
+            }
             game.native_text(batch, label, [10.0, y + 5.0], 0xFFFFFF, true);
             if current == Some(*row) {
                 game.native_fill(batch, [2.0, y + 2.0, 2.0, NAV_ROW - 4.0], 0xFFFF_FFFF);
@@ -1288,7 +1955,7 @@ impl Ui {
             game.native_fill(batch, [x, y, w, h], 0xA600_0000);
         }
         let focused = self.focus == Focus::Search;
-        self.draw_field(game, batch, &self.search, [x, y, w - 18.0, h], 12.0, 6.0, focused, "Search...", 0xE0E0E0);
+        self.draw_field(game, batch, &self.search, [x, y, w - 18.0, h], 12.0, 6.0, focused, &tr("gui.jade.search.hint", "Search..."), 0xE0E0E0);
         // NotUglyEditBox.alwaysRenderCross.
         if !self.search.text.is_empty() {
             game.native_text(batch, "x", [w - 12.0, y + 5.0], 0xAAAAAA, true);
@@ -1336,10 +2003,10 @@ impl Ui {
                 }
                 let active = enabled && jade::opt(game, "profile") == i.to_string();
                 let color = if active { ACTIVE_COLOR } else if enabled { NAME_COLOR } else { 0x808080 };
-                self.draw_field(game, batch, &self.names[i], rects.name, 4.0, 7.0, focused, &format!("#{i}"), color);
+                self.draw_field(game, batch, &self.names[i], rects.name, 4.0, 7.0, focused, &row.label, color);
                 let use_it = enabled && !active;
-                ui::button(batch, atlas, rects.use_it[0], rects.use_it[1], rects.use_it[2], rects.use_it[3], &Text::literal("Use"), use_it, use_it && hit(rects.use_it, m));
-                ui::button(batch, atlas, rects.save[0], rects.save[1], rects.save[2], rects.save[3], &Text::literal("Save"), use_it, use_it && hit(rects.save, m));
+                ui::button(batch, atlas, rects.use_it[0], rects.use_it[1], rects.use_it[2], rects.use_it[3], &Text::literal(tr("gui.jade.profile.use", "Use")), use_it, use_it && hit(rects.use_it, m));
+                ui::button(batch, atlas, rects.save[0], rects.save[1], rects.save[2], rects.save[3], &Text::literal(tr("selectWorld.edit.save", "Save")), use_it, use_it && hit(rects.save, m));
                 return;
             }
             _ => {}
@@ -1354,35 +2021,8 @@ impl Ui {
             Text::colored(row.label.as_str(), 0xAAAAAA)
         };
         ui::scrolling_text(batch, atlas, &label, label_x, rects.value[0] - 4.0, y, y + ROW, y + 9.0, white);
-        let [vx, vy, vw, vh] = rects.value;
-        let hover = hit(rects.value, m);
-        match row.kind {
-            Kind::Slider { min, max, percent, .. } => {
-                let value = jade::num(game, row.key) as f32;
-                let t = if max > min { ((value - min) / (max - min)).clamp(0.0, 1.0) } else { 0.0 };
-                let text = if percent { format!("{}%", value.round() as i64) } else { jade::trim2(f64::from(value)) };
-                let dragging = matches!(self.drag, Drag::Slider(r) if r == row_index);
-                ui::slider(batch, atlas, vx, vy, vw, &Text::literal(text), t, hover, true, dragging);
-            }
-            Kind::Toggle => {
-                let on = jade::on(game, row.key);
-                let text = if on { Text::colored("On", ON_COLOR) } else { Text::colored("Off", OFF_COLOR) };
-                ui::button(batch, atlas, vx, vy, vw, vh, &text, true, hover);
-            }
-            Kind::Cycle | Kind::Theme | Kind::Style => {
-                let text = jade::option(row.key).map_or_else(String::new, |o| jade::value_label(game, o));
-                ui::button(batch, atlas, vx, vy, vw, vh, &Text::literal(text), enabled, enabled && hover);
-            }
-            Kind::Keybind(i) => {
-                let name = key_label(game, jade::KEYS[i][0]);
-                let text = if self.binding == Some(i) { Text::colored(format!("> {name} <"), 0xFFFF55) } else { Text::literal(name) };
-                ui::button(batch, atlas, vx, vy, vw, vh, &text, enabled, enabled && hover);
-            }
-            Kind::Adjust => ui::button(batch, atlas, vx, vy, vw, vh, &Text::literal("Adjust..."), true, hover),
-            Kind::Reload => ui::button(batch, atlas, vx, vy, vw, vh, &Text::literal("Reload"), true, hover),
-            Kind::Reset => ui::button(batch, atlas, vx, vy, vw, vh, &Text::colored("Reset", 0xFF5555), true, hover),
-            Kind::Title | Kind::Profile(_) => {}
-        }
+        let hover = hit(rects.value, m) || (self.keyboard && self.focused_row() == Some(row_index));
+        self.draw_value(game, batch, row, row_index, rects.value, hover, enabled);
         if row.ignore {
             // `editIgnoreList`: its ☰ as the three bars it is.
             let r = rects.ignore;
@@ -1401,12 +2041,20 @@ impl Ui {
 
     fn profile_title(&self, i: usize) -> String {
         let name = self.names[i].text.trim();
-        if name.is_empty() { format!("#{i}") } else { name.to_owned() }
+        if name.is_empty() { tr(&format!("config.jade.profile.{i}"), &format!("#{i}")) } else { name.to_owned() }
     }
 
     fn press(&mut self, game: &Game<'_>, m: [f32; 2], button: i32, modifiers: u32) {
-        // A mouse button can't be bound here: Jade's keys are read from the keyboard's state alone.
-        if self.binding.take().is_some() {
+        self.keyboard = false;
+        // OptionsList.mouseClicked: the button becomes the key (InputConstants.Type.MOUSE).
+        if let Some(i) = self.binding.take() {
+            let bound = match button {
+                0 => "key.mouse.left".to_owned(),
+                1 => "key.mouse.right".to_owned(),
+                2 => "key.mouse.middle".to_owned(),
+                n => format!("key.mouse.{}", n + 1),
+            };
+            queue(Action::SetKey(jade::KEYS[i][0], bound));
             return;
         }
         if button != 0 {
@@ -1429,19 +2077,9 @@ impl Ui {
             return;
         }
         if self.page == Page::Home {
-            let [mod_settings, plugin_settings, profiles, done] = home_rects(self.size);
-            if hit(mod_settings, m) {
-                click_sound();
-                self.enter(game, Page::Mod);
-            } else if hit(plugin_settings, m) {
-                click_sound();
-                self.enter(game, Page::Plugins);
-            } else if hit(profiles, m) {
-                click_sound();
-                self.enter(game, Page::Profiles);
-            } else if hit(done, m) {
-                click_sound();
-                queue(Action::Close);
+            self.focus = Focus::None;
+            if let Some(i) = home_rects(self.size).iter().position(|r| hit(*r, m)) {
+                self.home_button(game, i);
             }
             return;
         }
@@ -1470,11 +2108,9 @@ impl Ui {
         // OptionsNav.Entry.onPress: showOnTop.
         if hit([0.0, SEARCH_H, NAV_W, self.size[1] - FOOTER - SEARCH_H], m) {
             let index = ((m[1] - SEARCH_H + self.nav_scroll) / NAV_ROW) as usize;
-            if let Some(row) = self.titles().get(index).copied()
-                && let Some(at) = self.shown.iter().position(|r| *r == row)
-            {
+            if let Some(row) = self.titles().get(index).copied() {
                 click_sound();
-                self.scroll = (ROW * at as f32 + 1.0).min(self.max_scroll());
+                self.show_on_top(row);
             }
             return;
         }
@@ -1489,6 +2125,10 @@ impl Ui {
             return;
         }
         if !hit(list, m) {
+            return;
+        }
+        if self.cards {
+            self.press_cards(game, m, modifiers & 1 != 0);
             return;
         }
         let index = ((m[1] - list[1] - 2.0 + self.scroll) / ROW).floor();
@@ -1510,7 +2150,6 @@ impl Ui {
         let rects = row_rects(left, width, y, row.ignore);
         let enabled = self.row_enabled(game, row);
         let kind = row.kind;
-        let key = row.key;
         if let Kind::Profile(i) = kind {
             if !enabled {
                 return;
@@ -1553,49 +2192,86 @@ impl Ui {
         if !hit(rects.value, m) || !enabled {
             return;
         }
-        match kind {
-            Kind::Toggle => {
-                click_sound();
-                if let Some(o) = jade::option(key) {
-                    jade::step_option(game, o, false);
-                } else {
-                    // A plugin's option (register_option).
-                    let now = jade::on(game, key);
-                    game.native_set_setting(ID, key, if now { "false" } else { "true" });
-                    jade::settings_changed();
+        if matches!(kind, Kind::Slider { .. }) {
+            self.press_slider(game, row_index, rects.value, m);
+        } else {
+            self.use_row(game, row_index, shift);
+        }
+    }
+
+    fn press_slider(&mut self, game: &Game<'_>, row_index: usize, value: [f32; 4], m: [f32; 2]) {
+        click_sound();
+        let track = [value[0], value[2]];
+        self.drag = Drag::Slider(row_index, track);
+        self.slide_to(game, row_index, track, m[0]);
+    }
+
+    /// HomeConfigScreen's buttons: mod settings, plugin settings, profiles, done.
+    fn home_button(&mut self, game: &Game<'_>, i: usize) {
+        click_sound();
+        match i {
+            0 => self.enter(game, Page::Mod),
+            1 => self.enter(game, Page::Plugins),
+            2 => self.enter(game, Page::Profiles),
+            _ => queue(Action::Close),
+        }
+    }
+
+    /// OptionsList.mouseClicked and Entry.mouseClicked in card mode: the popup's rows first (nothing goes through the
+    /// panel), then a card: its widget, or anywhere else on one with options to open its popup.
+    fn press_cards(&mut self, game: &Game<'_>, m: [f32; 2], shift: bool) {
+        if let Some(entry) = self.expanded
+            && let Some(panel) = self.popup_rect(entry)
+            && hit(panel, m)
+        {
+            let slide = self.popup_slide_offset();
+            let k = ((m[1] - panel[1] - 3.0 - slide) / ROW).floor();
+            if k >= 0.0
+                && let Some(row) = self.rows[entry].children.get(k as usize).copied()
+            {
+                let y = panel[1] + 3.0 + slide + k * ROW;
+                let value = Self::popup_value(panel, y);
+                if hit(value, m) && self.row_enabled(game, &self.rows[row]) {
+                    if matches!(self.rows[row].kind, Kind::Slider { .. }) {
+                        self.press_slider(game, row, value, m);
+                    } else {
+                        self.use_row(game, row, shift);
+                    }
                 }
             }
-            Kind::Cycle | Kind::Theme | Kind::Style => {
-                click_sound();
-                if let Some(o) = jade::option(key) {
-                    jade::step_option(game, o, shift);
+            return;
+        }
+        for at in 0..self.shown.len() {
+            let Some([x, y, w, h]) = self.card_rect(at) else { continue };
+            let row = self.shown[at];
+            if self.rows[row].kind == Kind::Title || !hit([x - CARD_BLEED, y - CARD_BLEED, w + 2.0 * CARD_BLEED, h + 2.0 * CARD_BLEED], m) {
+                continue;
+            }
+            let (cx, cy, cw, ch) = (x + 2.0, y + 2.0, w - 4.0, h - 4.0);
+            if self.rows[row].kind == Kind::Toggle {
+                let mid = cy + (ch / 2.0).floor();
+                if hit([cx + cw - TOGGLE_W - 4.0, mid - (TOGGLE_H / 2.0).floor(), TOGGLE_W, TOGGLE_H], m) {
+                    self.pressed = Some(row);
+                    self.use_row(game, row, shift);
+                    return;
+                }
+            } else {
+                let value = [cx + 4.0, cy + ch - 2.0 - 20.0, cw - 8.0, 20.0];
+                if hit(value, m) {
+                    if self.row_enabled(game, &self.rows[row]) {
+                        if matches!(self.rows[row].kind, Kind::Slider { .. }) {
+                            self.press_slider(game, row, value, m);
+                        } else {
+                            self.use_row(game, row, shift);
+                        }
+                    }
+                    return;
                 }
             }
-            Kind::Slider { .. } => {
-                click_sound();
-                self.drag = Drag::Slider(row_index);
-                self.slide_to(game, row_index, m[0]);
+            if !self.rows[row].children.is_empty() {
+                self.pending = Some((row, m, std::time::Instant::now()));
             }
-            Kind::Keybind(i) => {
-                click_sound();
-                self.binding = Some(i);
-            }
-            // WailaConfigScreen's `overlay_pos.adjust`: PreviewOptionsScreen.startAdjustingPosition.
-            Kind::Adjust => {
-                click_sound();
-                self.adjusting = true;
-            }
-            Kind::Reload => {
-                click_sound();
-                jade::reload_plugins();
-                self.rows = build(game, self.page);
-                self.filter();
-            }
-            Kind::Reset => {
-                click_sound();
-                self.confirm = Some(Confirm::Reset);
-            }
-            Kind::Title | Kind::Profile(_) => {}
+            return;
         }
     }
 
@@ -1698,7 +2374,21 @@ impl Ui {
             }
             return;
         }
+        const SELECT: [&str; 3] = ["key.keyboard.enter", "key.keyboard.keypad.enter", "key.keyboard.space"];
         if self.page == Page::Home {
+            // The Screen's own focus: the four buttons in order.
+            let at = if let Focus::Home(i) = self.focus { Some(i) } else { None };
+            match key {
+                "key.keyboard.tab" if shift => self.focus = Focus::Home(at.map_or(3, |i| (i + 3) % 4)),
+                "key.keyboard.left" | "key.keyboard.up" => self.focus = Focus::Home(at.map_or(3, |i| (i + 3) % 4)),
+                "key.keyboard.tab" | "key.keyboard.right" | "key.keyboard.down" => self.focus = Focus::Home(at.map_or(0, |i| (i + 1) % 4)),
+                _ if SELECT.contains(&key) => {
+                    if let Some(i) = at {
+                        self.home_button(game, i);
+                    }
+                }
+                _ => {}
+            }
             return;
         }
         match self.focus {
@@ -1712,15 +2402,85 @@ impl Ui {
                     game.native_set_setting(ID, &format!("profile_name_{i}"), &self.names[i].text);
                 }
             }
-            Focus::None => {}
+            _ => {}
+        }
+        // AbstractSliderButton: Enter lets a focused slider's arrows move it; they do until Enter again or the focus goes.
+        if let Focus::Row(row) = self.focus
+            && matches!(self.rows[row].kind, Kind::Slider { .. })
+        {
+            if SELECT.contains(&key) {
+                self.slider_keys = !self.slider_keys;
+                return;
+            }
+            if self.slider_keys && matches!(key, "key.keyboard.left" | "key.keyboard.right") {
+                self.step_slider(game, row, if key == "key.keyboard.left" { -1.0 } else { 1.0 });
+                return;
+            }
         }
         match key {
             // BaseOptionsScreen.keyPressed.
             "key.keyboard.tab" if ctrl && !shift => self.focus = Focus::Search,
-            "key.keyboard.up" if self.focus == Focus::None => self.scroll = (self.scroll - ROW).max(0.0),
-            "key.keyboard.down" if self.focus == Focus::None => self.scroll = (self.scroll + ROW).min(self.max_scroll()),
+            "key.keyboard.tab" => {
+                self.tab(game, !shift);
+                return;
+            }
             "key.keyboard.page.up" => self.scroll = (self.scroll - ROW * 9.0).max(0.0),
             "key.keyboard.page.down" => self.scroll = (self.scroll + ROW * 9.0).min(self.max_scroll()),
+            _ => {}
+        }
+        let arrow = matches!(key, "key.keyboard.up" | "key.keyboard.down" | "key.keyboard.left" | "key.keyboard.right");
+        match self.focus {
+            // The search box keeps left and right for its caret; down leaves it for the list.
+            Focus::Search => {
+                if key == "key.keyboard.down" {
+                    self.focus = Focus::None;
+                    if self.cards {
+                        self.arrow_cards(game, key);
+                    } else {
+                        self.arrow_list(game, key);
+                    }
+                }
+            }
+            Focus::Nav(i) => {
+                let titles = self.titles();
+                match key {
+                    "key.keyboard.up" => match i.checked_sub(1) {
+                        Some(i) => self.focus = Focus::Nav(i),
+                        None => self.focus = Focus::Search,
+                    },
+                    "key.keyboard.down" if i + 1 < titles.len() => self.focus = Focus::Nav(i + 1),
+                    "key.keyboard.right" => {
+                        // Back to the first row of that section.
+                        if let Some(row) = titles.get(i).and_then(|t| self.shown.iter().copied().find(|r| self.rows[*r].parent == Some(*t) && self.focusable(game, *r))) {
+                            self.focus_row(row);
+                        }
+                    }
+                    _ if SELECT.contains(&key) => {
+                        if let Some(row) = titles.get(i).copied() {
+                            click_sound();
+                            self.show_on_top(row);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            // A name's box keeps left and right too.
+            Focus::Profile(i) => {
+                if matches!(key, "key.keyboard.up" | "key.keyboard.down") {
+                    self.arrow_list(game, key);
+                } else if SELECT.contains(&key) && key != "key.keyboard.space" && jade::on(game, "enable_profiles") && jade::opt(game, "profile") != i.to_string() {
+                    click_sound();
+                    jade::use_profile(game, &i.to_string());
+                }
+            }
+            Focus::Row(row) if SELECT.contains(&key) => self.use_row(game, row, shift),
+            Focus::Row(_) | Focus::None | Focus::Home(_) if arrow => {
+                if self.cards {
+                    self.arrow_cards(game, key);
+                } else {
+                    self.arrow_list(game, key);
+                }
+            }
             _ => {}
         }
     }
@@ -1739,8 +2499,126 @@ impl Ui {
                 self.names[i].insert(c, 100);
                 game.native_set_setting(ID, &format!("profile_name_{i}"), &self.names[i].text);
             }
-            Focus::None => {}
+            _ => {}
         }
+    }
+}
+
+/// `OPTION_ON` and `OPTION_OFF`.
+fn on_off(on: bool) -> Text {
+    if on { Text::colored(tr("options.on", "On"), ON_COLOR) } else { Text::colored(tr("options.off", "Off"), OFF_COLOR) }
+}
+
+/// `cardsPerRow`.
+fn cards_per_row(size: [f32; 2]) -> f32 {
+    (card_span(size).1 / MIN_CARD_WIDTH).floor().clamp(1.0, MAX_CARDS_PER_ROW)
+}
+
+/// `getRowLeft` and `getRowWidth` in card mode (`cardRowWidth`).
+fn card_span(size: [f32; 2]) -> (f32, f32) {
+    let list = list_rect(size);
+    let width = (list[2] - 16.0).clamp(0.0, 900.0);
+    (list[0] + ((list[2] - width) / 2.0).floor(), width)
+}
+
+/// `card_background`, `_hover`, `_expandable` and `_expandable_hover`, from their PNGs: the frame and fill stand a bleed
+/// outside the card, the frame's corners cut, and one with options lightens over its last seven rows.
+fn draw_card_background(game: &Game<'_>, batch: &mut HudBatch, [x, y, w, h]: [f32; 4], expandable: bool, hovered: bool) {
+    const SHADE: [u32; 7] = [0xA116_1A24, 0xA219_1E28, 0xA31C_222D, 0xA420_2733, 0xA525_2D3A, 0xA62A_3442, 0xA72F_3A4A];
+    const SHADE_HOVER: [u32; 7] = [0xB81F_2634, 0xB922_2A39, 0xBA26_2F3F, 0xBB2B_3546, 0xBC30_3B4D, 0xBE36_4356, 0xBF3C_4B60];
+    let (frame, fill) = match (expandable, hovered) {
+        (false, false) => (0x33FF_FFFF, 0x9912_1216),
+        (false, true) => (0x66FF_FFFF, 0xB01C_1C24),
+        (true, false) => (0x557F_A8D0, 0x9912_151E),
+        (true, true) => (0x779F_C8F0, 0xB01C_2230),
+    };
+    let (ox, oy, ow, oh) = (x - CARD_BLEED, y - CARD_BLEED, w + 2.0 * CARD_BLEED, h + 2.0 * CARD_BLEED);
+    game.native_fill(batch, [ox + 1.0, oy, ow - 2.0, 1.0], frame);
+    game.native_fill(batch, [ox + 1.0, oy + oh - 1.0, ow - 2.0, 1.0], frame);
+    game.native_fill(batch, [ox, oy + 1.0, 1.0, oh - 2.0], frame);
+    game.native_fill(batch, [ox + ow - 1.0, oy + 1.0, 1.0, oh - 2.0], frame);
+    let (ix, iy, iw, ih) = (ox + 1.0, oy + 1.0, ow - 2.0, oh - 2.0);
+    if expandable {
+        game.native_fill(batch, [ix, iy, iw, ih - 7.0], fill);
+        for (i, shade) in (if hovered { SHADE_HOVER } else { SHADE }).into_iter().enumerate() {
+            game.native_fill(batch, [ix, iy + ih - 7.0 + i as f32, iw, 1.0], shade);
+        }
+    } else {
+        game.native_fill(batch, [ix, iy, iw, ih], fill);
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum ToggleState {
+    Normal,
+    Hovered,
+    Focused,
+    Pressed,
+}
+
+/// ToggleButton's `toggle/<on|off>_<state>` sprite, from its PNG, as runs of fills: `(x0, y0, x1, y1, ARGB)`, inclusive.
+fn draw_toggle(game: &Game<'_>, batch: &mut HudBatch, [x, y]: [f32; 2], on: bool, state: ToggleState) {
+    const INK: u32 = 0xFF1E_1E1F;
+    const SHADOW: u32 = 0xFF58_585A;
+    // The knob's lights: its left and top edge, its right and lower edge, its face.
+    let (edge, under, face) = match state {
+        ToggleState::Hovered => (0xFFFB_FBFD, 0xFFF8_FAFB, 0xFFF4_F6F9),
+        ToggleState::Pressed => (0xFFE0_E0E1, 0xFFD0_D1D3, 0xFFB1_B2B5),
+        ToggleState::Normal | ToggleState::Focused => (0xFFEC_EDEE, 0xFFE3_E3E5, 0xFFD0_D1D4),
+    };
+    let mut r = |x0: u8, y0: u8, x1: u8, y1: u8, argb: u32| {
+        game.native_fill(batch, [x + f32::from(x0), y + f32::from(y0), f32::from(x1 - x0 + 1), f32::from(y1 - y0 + 1)], argb);
+    };
+    // Where the knob's left edge is: on the right side when on.
+    let k: u8 = if on { 14 } else { 1 };
+    // The outline: the track's and the knob's together.
+    r(1, 15, 27, 15, INK);
+    r(k, 1, k + 13, 1, INK);
+    r(k, 2, k, 14, INK);
+    r(k + 13, 2, k + 13, 14, INK);
+    // The knob.
+    r(k + 1, 2, k + 11, 2, edge);
+    r(k + 2, 3, k + 11, 11, face);
+    r(k + 12, 2, k + 12, 12, under);
+    r(k + 2, 12, k + 11, 12, under);
+    r(k + 2, 13, k + 12, 14, SHADOW);
+    // The left edge runs to the foot on the on sprite; the off sprite's stops above its shadow.
+    if on {
+        r(k + 1, 3, k + 1, 14, edge);
+    } else {
+        r(k + 1, 3, k + 1, 11, edge);
+        r(k + 1, 12, k + 1, 12, under);
+        r(k + 1, 13, k + 1, 14, SHADOW);
+    }
+    if on {
+        // The track, green, with its I.
+        r(1, 3, 13, 3, INK);
+        r(1, 4, 1, 14, INK);
+        r(2, 4, 13, 4, 0xFF63_9D52);
+        r(2, 5, 2, 13, 0xFF63_9D52);
+        r(3, 5, 13, 13, 0xFF3C_8527);
+        r(2, 14, 13, 14, 0xFF4F_913C);
+        r(8, 7, 8, 11, 0xFFFF_FFFF);
+    } else {
+        // The track, grey, with its O.
+        r(15, 3, 27, 3, INK);
+        r(27, 4, 27, 14, INK);
+        r(15, 4, 25, 4, 0xFFA3_A4A6);
+        r(26, 4, 26, 13, 0xFF97_989B);
+        r(15, 5, 25, 13, 0xFF8C_8D90);
+        r(15, 14, 26, 14, 0xFF97_989B);
+        r(18, 7, 22, 7, 0xFF24_2425);
+        r(18, 8, 18, 10, 0xFF24_2425);
+        r(22, 8, 22, 10, 0xFF24_2425);
+        r(18, 11, 22, 11, 0xFF24_2425);
+    }
+    if state == ToggleState::Focused {
+        // The white ring round the knob.
+        let (a, b): (u8, u8) = if on { (13, 28) } else { (0, 15) };
+        r(a, 0, b, 0, 0xFFFF_FFFF);
+        r(a, 16, b, 16, 0xFFFF_FFFF);
+        r(a, 1, a, 15, 0xFFFF_FFFF);
+        r(b, 1, b, 15, 0xFFFF_FFFF);
     }
 }
 
