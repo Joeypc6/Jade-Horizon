@@ -86,7 +86,6 @@ const MOD_PAGE: &[Item] = &[
     Opt("boss_bar_overlap", 0),
     Slide("reach_distance", 0, 0.0, 20.0, 0.5, false),
     Opt("perspective_mode", 0),
-    Slide("max_position_deviation", 0, 0.0, 1000.0, 1.0, false),
     Head("config.jade.overlay"),
     Adjust,
     Opt("overlay_x", 1),

@@ -273,3 +273,157 @@ bindings = [
   { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
 ]
 
+[[injection]]
+id = "jade-perform-console"
+kind = "HEAD"
+hook = "perform_console_command"
+hook_version = 1
+helper = "jade_perform_console.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "command", ty = "&str", value = "command" },
+  { name = "ran", ty = "&mut bool", value = "&mut *ran" },
+]
+
+# Jade.registerGameRules: jade:max_position_deviation, an integer in MISC, 21, 0 to 1000.
+[[module]]
+id = "gamerule"
+file = "crates/horizon-client-core/src/gamerules.rs"
+name = "hz_jade_rule"
+source = "gamerule.rs"
+visibility = "pub"
+
+[[injection]]
+id = "gamerule-lookup"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client_core::gamerules::rule"
+helper = "rule_lookup.rs"
+bindings = [
+  { name = "name", ty = "&str", value = "name" },
+]
+
+# The value reaches Level.write through level.game_rules, which it writes only vanilla's rules of.
+[[injection]]
+id = "gamerule-by-name"
+kind = "RETURN"
+target = "horizon_client_core::gamerules::GameRules::by_name"
+helper = "rule_by_name.rs"
+bindings = [
+  { name = "rules", ty = "&GameRules", value = "&*self" },
+  { name = "value", ty = "BTreeMap<String, i32>", value = "$value" },
+]
+
+[[injection]]
+id = "gamerule-save"
+kind = "HEAD"
+target = "horizon_client_lib::save::Level::write_internal"
+helper = "rule_save.rs"
+bindings = [
+  { name = "level", ty = "&Level", value = "&*self" },
+  { name = "dir", ty = "&Path", value = "dir" },
+]
+
+[[injection]]
+id = "gamerule-world-opening"
+kind = "HEAD"
+target = "horizon_client::game::chat::Game<'_>::load_world_state"
+helper = "rule_world_opening.rs"
+
+[[injection]]
+id = "gamerule-level-opened"
+kind = "HEAD"
+target = "horizon_client::game::levels::Game<'_>::native_level_opened"
+helper = "rule_level_opened.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+]
+
+# /gamerule and its event line, whose key says minecraft: for Horizon's own rules.
+[[injection]]
+id = "gamerule-set"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::game::commands::Game<'_>::set_game_rule"
+helper = "rule_set.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "rule", ty = "&gamerules::Rule", value = "rule" },
+  { name = "value", ty = "Value", value = "value" },
+]
+
+[[injection]]
+id = "gamerule-command-tree"
+kind = "RETURN"
+target = "horizon_command::vanilla::build_for_features"
+helper = "rule_command_tree.rs"
+bindings = [
+  { name = "value", ty = "Dispatcher", value = "$value" },
+]
+
+[[injection]]
+id = "gamerule-guest-tree"
+kind = "HEAD"
+target = "horizon_client_lib::lan::commands::fill"
+helper = "rule_guest_tree.rs"
+bindings = [
+  { name = "target", ty = "usize", value = "target" },
+  { name = "path", ty = "&Vec<String>", value = "&*path" },
+  { name = "nodes", ty = "&mut Vec<Node>", value = "&mut *nodes" },
+  { name = "paths", ty = "&mut HashMap<Vec<String>, usize>", value = "&mut *paths" },
+]
+
+# ClientboundGameRuleValuesPacket: the guest's Game Rules screen opens on what this lists.
+[[injection]]
+id = "gamerule-values"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::game::lan_actions::Game<'_>::lan_guest_packet"
+helper = "rule_values.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
+  { name = "host", ty = "&mut LanHost", value = "&mut *host" },
+  { name = "conn", ty = "u32", value = "conn" },
+  { name = "packet", ty = "&S", value = "&packet" },
+]
+
+# AbstractGameRulesScreen: `build` returns Self, which a hook can't, so the number box comes when it's first asked for.
+[[injection]]
+id = "gamerule-screen-rows"
+kind = "RETURN"
+target = "horizon_client_lib::game_rules_screen::RulesScreen::rows"
+helper = "rule_rows.rs"
+bindings = [
+  { name = "screen", ty = "&RulesScreen", value = "&*self" },
+  { name = "value", ty = "Vec<Row>", value = "$value" },
+]
+
+[[injection]]
+id = "gamerule-screen-number"
+kind = "HEAD"
+target = "horizon_client_lib::game_rules_screen::RulesScreen::number"
+helper = "rule_number.rs"
+bindings = [
+  { name = "screen", ty = "&mut RulesScreen", value = "&mut *self" },
+  { name = "name", ty = "&str", value = "name" },
+]
+
+[[injection]]
+id = "gamerule-screen-changes"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client_lib::game_rules_screen::RulesScreen::changes"
+helper = "rule_changes.rs"
+bindings = [
+  { name = "screen", ty = "&RulesScreen", value = "&*self" },
+]
+
+[[injection]]
+id = "gamerule-screen-name"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client_lib::game_rules_screen::name_key"
+helper = "rule_name_key.rs"
+bindings = [
+  { name = "r", ty = "&Rule", value = "r" },
+]

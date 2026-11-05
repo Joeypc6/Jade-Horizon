@@ -402,7 +402,6 @@ pub fn option_lang_key(key: &str) -> Option<String> {
         | "perspective_mode" | "reach_distance" | "item_mod_name" | "text_background_opacity" | "flip_main_hand" | "overlay_alpha" | "overlay_theme" | "theme_style" | "animation" | "narrate_keys" | "enable_profiles"
         | "debug_mode" | "accessibility_plugin" | "always_list_mode" => Some(format!("config.jade.{key}")),
         "scale" => Some("config.jade.overlay_scale".to_owned()),
-        "max_position_deviation" => Some("gamerule.jade.max_position_deviation".to_owned()),
         "object_name" | "mod_name" | "mod_name_smaller" | "distance" | "coordinates" | "block_face" | "registry_name" | "block_states" | "block_properties" | "loot_table" => core(key),
         "mod_name_translated" => core("mod_name.translated"),
         "coordinates_rel" => core("coordinates.rel"),
@@ -526,8 +525,6 @@ pub const OPTIONS: &[Opt] = &[
     off_by_default("debug_mode", "Debug Mode"),
     // WailaConfig.General.builtinCamouflage (no screen in Jade; in the file there).
     on_by_default("builtin_camouflage", "Built-in Camouflage"),
-    // The gamerule jade:max_position_deviation: Horizon's game rule table is fixed, so a setting of the host's.
-    Opt { key: "max_position_deviation", label: "Max Position Deviation", default: "21", values: &[("0", "0"), ("21", "21"), ("64", "64"), ("256", "256"), ("1000", "1000")] },
     // Core Features.
     on_by_default("object_name", "Target Name"),
     on_by_default("mod_name", "Mod Name"),
@@ -949,7 +946,7 @@ fn target(game: &Game<'_>) -> Option<Target> {
     }
     // Extended Reach, and Perspective Mode's camera: the block on the crosshair from there.
     let extra = num(game, "reach_distance");
-    let block_reach = if extra > 0.0 { extra } else { 5.0 };
+    let block_reach = game.block_reach + extra; // RayTracing.fire: the player's own range, Extended Reach on top.
     let camera_ray = opt(game, "perspective_mode") == "camera" && !game.camera_type.first_person();
     let mut block = game.native_view_hit().filter(|(d, _)| f64::from(*d) <= block_reach);
     if camera_ray
@@ -1195,7 +1192,7 @@ fn ray_box(eye: [f64; 3], dir: [f64; 3], lo: [f64; 3], hi: [f64; 3], reach: f64)
 /// The falling block under the crosshair (its whole-block box) within reach, and its distance.
 fn falling_hit(game: &Game<'_>) -> Option<(usize, f64)> {
     let (eye, dir) = game.aim()?;
-    let reach: f64 = if game.creative { 5.0 } else { 3.0 };
+    let reach = game.entity_reach + num(game, "reach_distance");
     let mut best: Option<(usize, f64)> = None;
     for (i, f) in game.falling.iter().enumerate() {
         let p = [f.position.x, f.position.y, f.position.z];
@@ -1225,7 +1222,7 @@ fn falling_hit(game: &Game<'_>) -> Option<(usize, f64)> {
 /// The dropped item under the crosshair (ItemEntity's 0.25 box) within reach, and its distance.
 fn item_hit(game: &Game<'_>) -> Option<(usize, f64)> {
     let (eye, dir) = game.aim()?;
-    let reach: f64 = if game.creative { 5.0 } else { 3.0 };
+    let reach = game.entity_reach + num(game, "reach_distance");
     let mut best: Option<(usize, f64)> = None;
     for (i, e) in game.dropped.iter().enumerate() {
         let p = [e.position.x, e.position.y, e.position.z];
@@ -1549,7 +1546,8 @@ fn vanilla(game: &Game<'_>, t: &Target, details: bool, lines: &mut Vec<Line>) {
             if matches!(kind, "minecraft:villager" | "minecraft:zombie_villager") && on(game, "villager_profession") {
                 const PROFESSIONS: [&str; 15] = ["none", "armorer", "butcher", "cartographer", "cleric", "farmer", "fisherman", "fletcher",
                     "leatherworker", "librarian", "mason", "nitwit", "shepherd", "toolsmith", "weaponsmith"];
-                let prof = PROFESSIONS[m.extra.variant2 as usize % PROFESSIONS.len()];
+                // 15 is AE2's Fluix Researcher (InitVillager.PROFESSION).
+                let prof = if m.extra.variant2 == 15 { "fluix_researcher" } else { PROFESSIONS[m.extra.variant2 as usize % PROFESSIONS.len()] };
                 let mut text = game.translate(&format!("entity.minecraft.villager.{prof}"), prof);
                 let level = m.extra.variant3;
                 if !matches!(prof, "none" | "nitwit") && (1..=5).contains(&level) {
@@ -3027,8 +3025,13 @@ pub fn client_command(game: &mut Game<'_>, command: &str, ran: &mut bool) {
 
 /// `/jade show|hide <targets>` (JadeServerCommand, level 2): each player's overlay on or off.
 fn server_command(game: &mut Game<'_>, from: u128, level: u8, args: &[&str]) {
+    // No player (`from` 0): the server's console.
     let tell = |game: &mut Game<'_>, t: &str| {
-        game.native_tell(from, horizon_client::text::Text::legacy(t));
+        if from == 0 {
+            game.native_feedback(horizon_client::text::Text::legacy(t));
+        } else {
+            game.native_tell(from, horizon_client::text::Text::legacy(t));
+        }
     };
     if level < 2 {
         tell(game, "You do not have permission to use this command");
@@ -3060,6 +3063,16 @@ pub fn perform_command(game: &mut Game<'_>, player: &crate::game::native_server:
         *ran = true;
         let args: Vec<&str> = words.collect();
         server_command(game, player.uuid, player.permission, &args);
+    }
+}
+
+/// `native_perform_console_command`: `/jade` on a server's console.
+pub fn perform_console_command(game: &mut Game<'_>, command: &str, ran: &mut bool) {
+    let mut words = command.split_whitespace();
+    if words.next() == Some("jade") {
+        *ran = true;
+        let args: Vec<&str> = words.collect();
+        server_command(game, 0, 4, &args);
     }
 }
 
@@ -3800,7 +3813,7 @@ fn out_of_reach(game: &Game<'_>, player: u128, at: [f64; 3], base: f64) -> bool 
         return false;
     }
     let Some(p) = game.native_server_players().into_iter().find(|p| p.uuid == player) else { return true };
-    let most = base + num(game, "max_position_deviation");
+    let most = base + f64::from(game.ui.rules.int(horizon_client::gamerules::hz_jade_rule::NAME));
     (0..3).map(|i| (p.position[i].floor() - at[i].floor()).powi(2)).sum::<f64>() > most * most
 }
 
@@ -4043,4 +4056,32 @@ pub fn from_server(channel: &str, data: &[u8]) {
     let [x, y, z] = v.as_slice() else { return };
     let lines: Vec<String> = it.map(str::to_owned).collect();
     CLIENT.with_borrow_mut(|c| c.data = Some(([*x, *y, *z], lines, std::time::Instant::now())));
+}
+
+thread_local! {
+    /// The world's game rules were just read, and this thread's next opened level brings ours in.
+    static RULE_OPENING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// `load_world_state`: Horizon reads the rules from game_rules.dat, which has only vanilla's.
+pub fn rule_world_opening() {
+    RULE_OPENING.set(true);
+}
+
+/// Jade.MAX_POSITION_DEVIATION from data/jade/game_rules.dat (Java keeps it in game_rules.dat, whose file Horizon writes
+/// for vanilla alone), right after the world's rules were read. Else what Create New World chose, else the old setting.
+pub fn rule_level_opened(game: &mut Game<'_>) {
+    if !RULE_OPENING.replace(false) {
+        return;
+    }
+    use horizon_client::gamerules::{Value, hz_jade_rule::NAME};
+    use horizon_world::nbt::Tag;
+    let saved = horizon_client::save::read_dat(&game.world_root.join("data/jade/game_rules.dat"));
+    let value = match saved.as_ref().and_then(|t| t.get("data")).and_then(|d| d.get(NAME)) {
+        Some(Tag::Int(v)) => Some(*v),
+        _ => game.level.game_rules.get(NAME).copied().or_else(|| game.native_setting(ID, "max_position_deviation").and_then(|v| v.parse().ok())),
+    };
+    if let Some(value) = value {
+        game.ui.rules.set(NAME, Value::Int(value));
+    }
 }
