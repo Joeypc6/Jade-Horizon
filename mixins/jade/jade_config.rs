@@ -154,7 +154,7 @@ const PLUGIN_PAGE: &[Item] = &[
     Opt("animal_owner", 0),
     Opt("sulfur_cube", 0),
     Opt("villager_profession", 0),
-    Opt("villager_restock", 1),
+    Opt("villager_restock", 0),
     Opt("zombie_villager", 0),
     Opt("pet_armor", 0),
     Opt("pet_armor_mode", 1),
@@ -206,6 +206,59 @@ const ACCESS_PAGE: &[Item] = &[
     Opt("access_held", 0),
     Opt("access_npc", 0),
 ];
+
+/// What a plugin option's card shows: the provider's `getConfigIcon`, or the ConfigIcon of the plugin's `addConfig` (distance,
+/// coordinates, mod name, registry name, breaking progress, health, armour, pet armour). Only a primary key can have one
+/// (ConfigEntry.setIcon), and all of Jade's are items: nothing it has calls `ConfigIcon.sprite`.
+fn config_icon(key: &str) -> Option<&'static str> {
+    Some(match key {
+        "object_name" | "mod_name" | "registry_name" | "access_npc" => "minecraft:name_tag",
+        "distance" => "minecraft:spyglass",
+        "coordinates" | "block_face" => "minecraft:compass",
+        "block_states" => "minecraft:debug_stick",
+        "block_properties" => "minecraft:comparator",
+        "loot_table" | "item_storage" => "minecraft:chest",
+        "entity_health" => "minecraft:golden_apple",
+        "entity_armor" => "minecraft:iron_chestplate",
+        "entity_stats" => "minecraft:saddle",
+        // StatusEffectsProvider.Client: a Potion of Healing (`draw_card`).
+        "potion_effects" => "minecraft:potion",
+        "item_frame" => "minecraft:item_frame",
+        "mob_growth" | "mob_breeding" | "crop_progress" => "minecraft:wheat",
+        "armor_stand" => "minecraft:armor_stand",
+        "painting" => "minecraft:painting",
+        "next_entity_drop" => "minecraft:egg",
+        "animal_owner" => "minecraft:lead",
+        "sulfur_cube" => "minecraft:sulfur",
+        "villager_profession" | "villager_restock" => "minecraft:emerald",
+        "zombie_villager" => "minecraft:rotten_flesh",
+        "pet_armor" => "minecraft:wolf_armor",
+        "item_tooltip" => "minecraft:paper",
+        "breaking_progress" => "minecraft:iron_pickaxe",
+        "harvest_tool" => "minecraft:diamond_pickaxe",
+        "brewing_stand" => "minecraft:brewing_stand",
+        "tnt_stability" => "minecraft:tnt",
+        "beehive" => "minecraft:beehive",
+        "note_block" => "minecraft:note_block",
+        "command_block" => "minecraft:command_block",
+        "enchantment_power" | "total_enchantment_power" => "minecraft:enchanting_table",
+        "player_head" => "minecraft:player_head",
+        "energy_storage" => "minecraft:redstone_block",
+        "fluid_storage" => "minecraft:water_bucket",
+        "lectern" => "minecraft:lectern",
+        "furnace" => "minecraft:furnace",
+        "mob_spawner" => "minecraft:spawner",
+        "redstone" => "minecraft:redstone",
+        "jukebox" => "minecraft:jukebox",
+        "shelf" => "minecraft:chiseled_bookshelf",
+        "waxed" => "minecraft:honeycomb",
+        "access_sign" => "minecraft:oak_sign",
+        "access_block" | "access_entity" => "minecraft:book",
+        "access_variant" => "minecraft:blue_egg",
+        "access_held" => "minecraft:diamond_sword",
+        _ => return None,
+    })
+}
 
 /// The option's `_desc` and `_extra_msg` (`gamerule.*.description` for the one that is a game rule in Java).
 fn help(key: &str) -> (String, String) {
@@ -295,6 +348,8 @@ struct Row {
     /// `editIgnoreList`'s button on the row.
     ignore: bool,
     danger: bool,
+    /// `OptionsList.Entry.icon`, an item: drawn on its card, the title moved over for it.
+    icon: Option<&'static str>,
 }
 
 /// An EditBox's text and caret (in characters).
@@ -655,7 +710,7 @@ impl Builder {
         if let Some(p) = parent {
             self.rows[p].children.push(index);
         }
-        self.rows.push(Row { kind, label, key, desc, words, parent, children: Vec::new(), secondary, depth, ignore: false, danger: false });
+        self.rows.push(Row { kind, label, key, desc, words, parent, children: Vec::new(), secondary, depth, ignore: false, danger: false, icon: config_icon(key) });
         &mut self.rows[index]
     }
 
@@ -1781,7 +1836,7 @@ impl Ui {
             let over = hit(list, m) && !on_panel && hit([x - CARD_BLEED, y - CARD_BLEED, w + 2.0 * CARD_BLEED, h + 2.0 * CARD_BLEED], m);
             let hovered = if self.keyboard { focused == Some(*row_index) } else { over };
             self.draw_card(game, batch, row, *row_index, rect, hovered, m);
-            let title_x = x + 2.0 + 6.0;
+            let title_x = x + 2.0 + if row.icon.is_some() { 26.0 } else { 6.0 };
             if over && !self.keyboard && m[0] >= title_x && m[0] < title_x + game.native_text_width(&row.label) && m[1] < y + h - 10.0 {
                 tooltip = Some((row, m));
             }
@@ -1804,7 +1859,8 @@ impl Ui {
         draw_card_background(game, batch, [x, y, w, h], expandable, hovered);
         // The entry's content: two pixels in (`CONTENT_PADDING`).
         let (cx, cy, cw, ch) = (x + 2.0, y + 2.0, w - 4.0, h - 4.0);
-        let text_x = cx + 6.0;
+        // `getTextX`.
+        let text_x = cx + if row.icon.is_some() { 26.0 } else { 6.0 };
         if row.kind == Kind::Toggle {
             // The title on up to two lines, the toggle at the right, both about the middle.
             let mid = cy + (ch / 2.0).floor();
@@ -1834,6 +1890,15 @@ impl Ui {
             let value = [cx + 4.0, cy + ch - 2.0 - 20.0, cw - 8.0, 20.0];
             let hover = if self.keyboard { self.focused_row() == Some(row_index) } else { hit(value, m) };
             self.draw_value(game, batch, row, row_index, value, hover, self.row_enabled(game, row));
+        }
+        // JadeIcons.render: 16 pixels, four in; about the middle beside a toggle, else level with the title.
+        if let Some(icon) = row.icon {
+            let at = [cx + 4.0, if row.kind == Kind::Toggle { cy + (ch / 2.0).floor() - 8.0 } else { cy + 1.0 }];
+            if row.key == "potion_effects" {
+                game.native_item_stack(batch, &horizon_client::items::ItemStack::new(icon, 1).with_potion("minecraft:healing"), at, 16.0);
+            } else {
+                game.native_item(batch, icon, at, 16.0);
+            }
         }
         if expandable {
             // card_arrow.png, a third of whose rows have anything on them.

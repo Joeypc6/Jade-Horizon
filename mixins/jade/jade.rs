@@ -308,6 +308,90 @@ pub fn tr(key: &str, fallback: &str) -> String {
     horizon_client::lang::get_or(key, fallback)
 }
 
+/// `tr` with its arguments in (`fill`).
+pub fn trf(key: &str, fallback: &str, args: &[&str]) -> String {
+    fill(&tr(key, fallback), args)
+}
+
+/// A language file's pattern with its arguments: `%s`, `%d`, `%1$s` and `%%` (Component.translatable, String.format),
+/// `{0}`, `{1,choice,...}` and `{1,select,...}` (JadeClient.formatString's MessageFormat; `select` always takes `other`, as
+/// this port has no JadeLanguages name classes). What an argument says isn't read again.
+pub fn fill(pattern: &str, args: &[&str]) -> String {
+    let arg = |n: usize| args.get(n).copied().unwrap_or("");
+    let c: Vec<char> = pattern.chars().collect();
+    let (mut out, mut i, mut next) = (String::new(), 0, 0);
+    while i < c.len() {
+        if c[i] == '%' {
+            let digits = c[i + 1..].iter().take_while(|d| d.is_ascii_digit()).count();
+            let numbered = digits > 0 && c.get(i + 1 + digits) == Some(&'$');
+            let at = if numbered { i + 2 + digits } else { i + 1 };
+            match c.get(at) {
+                Some('%') if !numbered => out.push('%'),
+                Some('s' | 'd') if numbered => {
+                    let n: usize = c[i + 1..i + 1 + digits].iter().collect::<String>().parse().unwrap_or(1);
+                    out.push_str(arg(n.saturating_sub(1)));
+                }
+                Some('s' | 'd') => {
+                    out.push_str(arg(next));
+                    next += 1;
+                }
+                _ => {
+                    out.push('%');
+                    i += 1;
+                    continue;
+                }
+            }
+            i = at + 1;
+        } else if c[i] == '{' {
+            let mut depth = 0;
+            let close = c[i..].iter().position(|ch| {
+                depth += match ch {
+                    '{' => 1,
+                    '}' => -1,
+                    _ => 0,
+                };
+                depth == 0
+            });
+            let Some(close) = close else {
+                out.push('{');
+                i += 1;
+                continue;
+            };
+            let body: String = c[i + 1..i + close].iter().collect();
+            let mut parts = body.splitn(3, ',');
+            let number = parts.next().and_then(|n| n.trim().parse::<usize>().ok());
+            match (number, parts.next().map(str::trim), parts.next()) {
+                (Some(n), None, _) => out.push_str(arg(n)),
+                (Some(n), Some("choice"), Some(choices)) => out.push_str(choice(choices, arg(n).parse::<f64>().unwrap_or(0.0))),
+                (Some(_), Some("select"), Some(cases)) => out.push_str(cases.rsplit_once("other {").map_or("", |(_, rest)| rest.strip_suffix('}').unwrap_or(rest))),
+                _ => {
+                    out.push('{');
+                    out.push_str(&body);
+                    out.push('}');
+                }
+            }
+            i += close + 1;
+        } else {
+            out.push(c[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// ChoiceFormat: the last choice whose limit the number reaches (`1#`, `2≤`, `1.0<`), else the first.
+fn choice(choices: &str, number: f64) -> &str {
+    let mut chosen = "";
+    for (i, part) in choices.split('|').enumerate() {
+        let Some((at, mark)) = part.char_indices().find(|(_, m)| matches!(m, '#' | '≤' | '<')) else { continue };
+        let limit: f64 = part[..at].trim().parse().unwrap_or(0.0);
+        if i == 0 || number > limit || (mark != '<' && number == limit) {
+            chosen = &part[at + mark.len_utf8()..];
+        }
+    }
+    chosen
+}
+
 /// An option's key in the jar's language files (`OptionsList.Entry.makeKey`, `plugin_<id>` for a provider's). None for the
 /// few this port added, which have no such key.
 pub fn option_lang_key(key: &str) -> Option<String> {
@@ -835,14 +919,26 @@ pub fn item_name(game: &Game<'_>, id: &str) -> String {
 
 /// IThemeHelper.seconds: a duration in ticks as Jade writes it ("12.5s", "2:05").
 pub fn seconds(ticks: i64) -> String {
-    let s = ticks as f64 / 20.0;
-    if s >= 60.0 {
-        format!("{}:{:02}", (s / 60.0) as i64, (s % 60.0) as i64)
-    } else if s.fract() == 0.0 {
-        format!("{s:.0}s")
-    } else {
-        format!("{s:.1}s")
+    // ThemeHelper.seconds: whole seconds, floored, then the two largest units.
+    let mut s = (ticks as f32 / 20.0).floor() as i64;
+    if s >= 3600 {
+        let h = s / 3600;
+        s %= 3600;
+        let m = s / 60;
+        if m == 0 {
+            return trf("jade.hours", "{0}h", &[&h.to_string()]);
+        }
+        return trf("jade.hours_minutes", "{0}h {1}m", &[&h.to_string(), &m.to_string()]);
     }
+    if s >= 60 {
+        let m = s / 60;
+        s %= 60;
+        if s == 0 {
+            return trf("jade.minutes", "{0}m", &[&m.to_string()]);
+        }
+        return trf("jade.minutes_seconds", "{0}m {1}s", &[&m.to_string(), &s.to_string()]);
+    }
+    trf("jade.seconds", "{0}s", &[&s.to_string()])
 }
 
 /// What the player looks at: the nearer of the block and the mob under the crosshair (fluids only with Toggle
@@ -1232,7 +1328,7 @@ fn harvest_tool(game: &Game<'_>, pos: [i32; 3], block: &str) -> Option<Vec<El>> 
     }
     let facts = game.res.facts().get(shown_state(game, pos, block));
     if facts.hardness < 0.0 {
-        return on(game, "harvest_unbreakable").then(|| vec![El::Text("§cUnbreakable".to_owned())]);
+        return on(game, "harvest_unbreakable").then(|| vec![El::Text(format!("§c{}", tr("jade.harvest_tool.unbreakable", "Unbreakable")))]);
     }
     // Effective Tool: a tool that only mines faster, not one the block needs.
     if !facts.requires_tool && !on(game, "harvest_effective") {
@@ -1267,26 +1363,27 @@ fn vanilla(game: &Game<'_>, t: &Target, details: bool, lines: &mut Vec<Line>) {
                     | "minecraft:melon_stem" | "minecraft:pumpkin_stem" | "minecraft:sweet_berry_bush" | "minecraft:nether_wart" | "minecraft:cocoa"
                     | "minecraft:torchflower_crop" | "minecraft:pitcher_crop");
                 if crop {
-                    lines.push(Line::text(if age >= most { "§aMature".to_owned() } else { format!("Growth: §f{}%", age * 100 / most) }));
+                    lines.push(Line::text(if age >= most { format!("§a{}", tr("tooltip.jade.crop_mature", "Mature")) } else { trf("tooltip.jade.crop_growth", "Growth: %s", &[&format!("§f{}%", age * 100 / most)]) }));
                 }
             }
             // RedstoneProvider: a lever's state, a repeater's delay, a comparator's mode, redstone power.
             let redstone = on(game, "redstone");
             if redstone && block == "minecraft:lever" {
                 let on = prop("powered").as_deref() == Some("true");
-                lines.push(Line::text(format!("State: {}", if on { "§aOn" } else { "§cOff" })));
+                let state = if on { format!("§a{}", tr("tooltip.jade.state_on", "On")) } else { format!("§c{}", tr("tooltip.jade.state_off", "Off")) };
+                lines.push(Line::text(trf("tooltip.jade.state", "State: %s", &[&state])));
             }
             if redstone && block == "minecraft:repeater" {
-                lines.push(Line::text(format!("Delay: §f{}", prop("delay").unwrap_or_default())));
+                lines.push(Line::text(trf("tooltip.jade.delay", "Delay: %d", &[&format!("§f{}", prop("delay").unwrap_or_default())])));
             }
             if redstone && block == "minecraft:comparator" {
-                let m = if prop("mode").as_deref() == Some("subtract") { "Subtractor" } else { "Comparator" };
-                lines.push(Line::text(format!("Mode: §f{m}")));
+                let m = if prop("mode").as_deref() == Some("subtract") { tr("tooltip.jade.mode_subtractor", "Subtractor") } else { tr("tooltip.jade.mode_comparator", "Comparator") };
+                lines.push(Line::text(trf("tooltip.jade.mode", "Mode: %s", &[&format!("§f{m}")])));
             }
             if let Some(power) = prop("power").filter(|_| redstone)
                 && !matches!(block.as_str(), "minecraft:comparator" | "minecraft:lever" | "minecraft:repeater")
             {
-                lines.push(Line::text(format!("Power: §f{power}")));
+                lines.push(Line::text(trf("tooltip.jade.power", "Power: %d", &[&format!("§f{power}")])));
             }
             // NoteBlockProvider: the instrument and the note.
             if block == "minecraft:note_block" && on(game, "note_block") {
@@ -1298,6 +1395,7 @@ fn vanilla(game: &Game<'_>, t: &Target, details: bool, lines: &mut Vec<Line>) {
                     "zombie" => "Zombie", "skeleton" => "Skeleton", "creeper" => "Creeper", "dragon" => "Dragon", "wither_skeleton" => "Wither Skeleton",
                     "piglin" => "Piglin", "custom_head" => "Custom Head", _ => "Harp",
                 };
+                let name = tr(&format!("jade.instrument.{inst}"), name);
                 let note: usize = prop("note").and_then(|n| n.parse().ok()).unwrap_or(0);
                 const NOTES: [&str; 12] = ["F♯", "G", "G♯", "A", "A♯", "B", "C", "C♯", "D", "D♯", "E", "F"];
                 let octave = if note < 6 { 1 } else if note < 18 { 2 } else { 3 };
@@ -1305,15 +1403,15 @@ fn vanilla(game: &Game<'_>, t: &Target, details: bool, lines: &mut Vec<Line>) {
             }
             // TNTStabilityProvider.
             if block == "minecraft:tnt" && prop("unstable").as_deref() == Some("true") && on(game, "tnt_stability") {
-                lines.push(Line::text("§cUnstable"));
+                lines.push(Line::text(format!("§c{}", tr("jade.tnt.unstable", "Unstable"))));
             }
             // BeehiveProvider.Client: the honey level.
             if let Some(h) = prop("honey_level").filter(|_| on(game, "beehive")) {
-                lines.push(Line::text(format!("Honey: §f{h} / 5")));
+                lines.push(Line::text(trf("jade.beehive.honey", "Honey: %s", &[&format!("§f{}", trf("jade.fraction", "%d / %d", &[&h.to_string(), "5"]))])));
             }
             // EnchantmentPowerProvider: a bookshelf counts one for an enchanting table.
             if matches!(block.as_str(), "minecraft:bookshelf" | "minecraft:chiseled_bookshelf") && details && on(game, "enchantment_power") {
-                lines.push(Line::text("Ench Power: §f1"));
+                lines.push(Line::text(trf("jade.ench_power", "Ench Power: %s", &["§f1"])));
             }
             // TotalEnchantmentPowerProvider: the bookshelves an enchanting table reads.
             // SignProvider: the side the player faces, line by line.
@@ -1321,22 +1419,23 @@ fn vanilla(game: &Game<'_>, t: &Target, details: bool, lines: &mut Vec<Line>) {
                 && let Some(horizon_client::containers::BlockEntity::Sign(sign)) = game.world.block_entities.get(&(pos[0], pos[1], pos[2]))
             {
                 let front = sign_front_faces(game, *pos);
-                lines.push(Line::text(if front { "Front:" } else { "Back:" }));
+                lines.push(Line::text(if front { tr("jade.access.sign.front", "Front:") } else { tr("jade.access.sign.back", "Back:") }));
                 let text = if front { &sign.front } else { &sign.back };
-                const LINES: [&str; 4] = ["First line: ", "Second line: ", "Third line: ", "Fourth line: "];
+                const LINES: [(&str, &str); 4] = [("jade.access.sign.line1", "First line: %s"), ("jade.access.sign.line2", "Second line: %s"), ("jade.access.sign.line3", "Third line: %s"), ("jade.access.sign.line4", "Fourth line: %s")];
                 for (i, line) in text.lines.iter().enumerate() {
-                    lines.push(Line::text(if details { format!("{}{line}", LINES[i]) } else { format!("§f{line}") }));
+                    lines.push(Line::text(if details { trf(LINES[i].0, LINES[i].1, &[line]) } else { format!("§f{line}") }));
                 }
             }
             if access(game, "access_block") {
                 // BlockDetailsBodyProvider.
                 let dir_name = |d: &str| {
                     let mut c = d.chars();
-                    c.next().map_or(String::new(), |f| f.to_uppercase().collect::<String>() + c.as_str())
+                    let english = c.next().map_or(String::new(), |f| f.to_uppercase().collect::<String>() + c.as_str());
+                    tr(&format!("jade.{d}"), &english)
                 };
                 if block == "minecraft:redstone_wire" {
                     let sides: Vec<String> = ["north", "south", "west", "east"].into_iter().filter(|d| prop(*d).is_some_and(|v| v != "none")).map(dir_name).collect();
-                    lines.push(Line::text(if sides.is_empty() { "Shape: Dot".to_owned() } else { format!("Shape: {}", sides.join(", ")) }));
+                    lines.push(Line::text(if sides.is_empty() { tr("jade.access.block.redstone_wire.dot", "Shape: Dot") } else { trf("jade.access.block.redstone_wire", "Shape: %s", &[&sides.join(", ")]) }));
                 } else if !(block.ends_with("campfire") || block == "minecraft:decorated_pot" || matches!(block.as_str(), "minecraft:small_dripleaf" | "minecraft:big_dripleaf" | "minecraft:big_dripleaf_stem" | "minecraft:pink_petals" | "minecraft:wildflowers")) {
                     if let Some(shape) = prop("shape").filter(|_| block.ends_with("rail")) {
                         let words = match shape.as_str() {
@@ -1344,24 +1443,24 @@ fn vanilla(game: &Game<'_>, t: &Target, details: bool, lines: &mut Vec<Line>) {
                             "ascending_north" => "Ascending North", "ascending_south" => "Ascending South", "south_east" => "South-East", "south_west" => "South-West",
                             "north_west" => "North-West", _ => "North-East",
                         };
-                        lines.push(Line::text(words));
+                        lines.push(Line::text(tr(&format!("jade.access.block.rail.{shape}"), words)));
                     }
                     if let Some(facing) = prop("facing") {
-                        lines.push(Line::text(format!("Facing: {}", dir_name(&facing))));
+                        lines.push(Line::text(trf("jade.access.block.facing", "Facing: %s", &[&dir_name(&facing)])));
                     }
                 }
                 // BlockAmountProvider.
                 if let Some(n) = prop("pickles").or_else(|| prop("candles")).or_else(|| prop("eggs")) {
-                    lines.push(Line::text(format!("Amount: {n}")));
+                    lines.push(Line::text(trf("jade.access.block.amount", "Amount: {0}", &[&n.to_string()])));
                 }
                 if let Some(n) = prop("bites") {
-                    lines.push(Line::text(format!("Bites: {n}")));
+                    lines.push(Line::text(trf("jade.access.block.bites", "Bites: {0}", &[&n.to_string()])));
                 }
                 if let Some(n) = prop("layers") {
-                    lines.push(Line::text(format!("Layers: {n}")));
+                    lines.push(Line::text(trf("jade.access.block.layers", "Layers: {0}", &[&n.to_string()])));
                 }
                 if let Some(n) = prop("level").filter(|_| block.ends_with("_cauldron")) {
-                    lines.push(Line::text(format!("Level: {n}")));
+                    lines.push(Line::text(trf("jade.access.block.level", "Level: {0}", &[&n.to_string()])));
                 }
             }
             if block == "minecraft:enchanting_table" && on(game, "total_enchantment_power") {
@@ -1379,7 +1478,7 @@ fn vanilla(game: &Game<'_>, t: &Target, details: bool, lines: &mut Vec<Line>) {
                         }
                     }
                 }
-                lines.push(Line::text(format!("Ench Power: §f{}", power.min(15))));
+                lines.push(Line::text(trf("jade.ench_power", "Ench Power: %s", &[&format!("§f{}", power.min(15))])));
             }
         }
         Target::Mob { index } => {
@@ -1411,10 +1510,10 @@ fn vanilla(game: &Game<'_>, t: &Target, details: bool, lines: &mut Vec<Line>) {
             // HeldItemProvider: both hands.
             if access(game, "access_held") {
                 if let Some(held) = m.extra.main_hand.as_deref() {
-                    lines.push(Line::text(format!("Main Hand: {}", item_name(game, held))));
+                    lines.push(Line::text(trf("jade.access.held_item.main", "Main Hand: %s", &[&item_name(game, held)])));
                 }
                 if let Some(held) = m.extra.off_hand.as_deref() {
-                    lines.push(Line::text(format!("Off Hand: {}", item_name(game, held))));
+                    lines.push(Line::text(trf("jade.access.held_item.off", "Off Hand: %s", &[&item_name(game, held)])));
                 }
             }
             // EntityDetailsBodyProvider: pose, passengers, leads.
@@ -1424,7 +1523,7 @@ fn vanilla(game: &Game<'_>, t: &Target, details: bool, lines: &mut Vec<Line>) {
                     lines.push(Line::text(tr("jade.access.entity.pose", "Pose: %s").replace("%s", &tr(&pose, ""))));
                 }
                 if m.extra.rider.is_some() {
-                    lines.push(Line::text("Passengers: 1"));
+                    lines.push(Line::text(trf("jade.access.entity.passengers", "Passengers: {0}", &["1"])));
                 }
                 use horizon_client::mobs::leash::Holder;
                 let mob_name = |id: u32| game.mobs.iter().find(|o| o.id == id).map(|o| o.custom_name.clone().unwrap_or_else(|| {
@@ -1432,18 +1531,18 @@ fn vanilla(game: &Game<'_>, t: &Target, details: bool, lines: &mut Vec<Line>) {
                     game.translate(&format!("entity.minecraft.{short}"), short)
                 }));
                 match &m.extra.leash {
-                    Some(Holder::Knot(p)) => lines.push(Line::text(format!("Leashed to: {} {} {}", p[0], p[1], p[2]))),
+                    Some(Holder::Knot(p)) => lines.push(Line::text(trf("jade.access.entity.leashed_to", "Leashed to: %s", &[&format!("{} {} {}", p[0], p[1], p[2])]))),
                     Some(Holder::Mob(id)) => {
                         if let Some(name) = mob_name(*id) {
-                            lines.push(Line::text(format!("Leashed to: {name}")));
+                            lines.push(Line::text(trf("jade.access.entity.leashed_to", "Leashed to: %s", &[&name])));
                         }
                     }
-                    Some(Holder::Player) => lines.push(Line::text("Leashed to: Player")),
+                    Some(Holder::Player) => lines.push(Line::text(trf("jade.access.entity.leashed_to", "Leashed to: %s", &["Player"]))),
                     _ => {}
                 }
                 let leading: Vec<String> = game.mobs.iter().filter(|o| o.extra.leash == Some(Holder::Mob(m.id))).filter_map(|o| mob_name(o.id)).collect();
                 if !leading.is_empty() {
-                    lines.push(Line::text(format!("is Leashing: {}", leading.join(", "))));
+                    lines.push(Line::text(trf("jade.access.entity.is_leashing", "is Leashing: %s", &[&leading.join(", ")])));
                 }
             }
             // VillagerProfessionProvider: the profession, and its level for one with a job.
@@ -1485,19 +1584,19 @@ fn vanilla(game: &Game<'_>, t: &Target, details: bool, lines: &mut Vec<Line>) {
                 if (1..=9).contains(amp) {
                     name = format!("{name} {}", game.translate(&format!("potion.potency.{amp}"), &roman(*amp + 1)));
                 }
-                let time = if *ticks < 0 { "∞".to_owned() } else { tick_duration(i64::from(*ticks)) };
+                let time = if *ticks < 0 { tr("effect.duration.infinite", "∞") } else { tick_duration(i64::from(*ticks)) };
                 let color = match horizon_client::brewing::effect(short).map(|e| e.category) {
                     Some(horizon_client::brewing::Category::Harmful) => "§c",
                     Some(horizon_client::brewing::Category::Beneficial) => "§a",
                     _ => "§f",
                 };
-                lines.push(Line::text(format!("{color}{name} ({time})")));
+                lines.push(Line::text(format!("{color}{}", trf("jade.potion", "%s (%s)", &[&name, &time]))));
             }
             // AnimalOwnerProvider: a tamed animal's owner (a player in the world, or the uuid).
             if let Some(owner) = m.extra.owner.filter(|_| on(game, "animal_owner")) {
                 let uuid = ((owner[0] as u32 as u128) << 96) | ((owner[1] as u32 as u128) << 64) | ((owner[2] as u32 as u128) << 32) | (owner[3] as u32 as u128);
                 let name = game.native_server_players().into_iter().find(|p| p.uuid == uuid).map(|p| p.name).unwrap_or_else(|| format!("{uuid:032x}"));
-                lines.push(Line::text(format!("Owner: §f{name}")));
+                lines.push(Line::text(trf("jade.owner", "Owner: %s", &[&format!("§f{name}")])));
             }
         }
         // ItemFrameProvider: the framed item's name.
@@ -1615,7 +1714,7 @@ fn pose_id(m: &horizon_client::mobs::Mob) -> u32 {
 
 /// AccessibilityPlugin.replaceTitle: the patterns of `jade.access.*` the state or the mob calls for, in Jade's order.
 fn access_title(game: &Game<'_>, t: &Target, mut title: String) -> String {
-    let mut wrap = |pattern: &str| title = pattern.replace("{0}", &title);
+    let mut wrap = |pattern: &str| title = fill(pattern, &[&title]);
     match t {
         // BlockDetailsProvider.
         Target::Block { pos, block } if access(game, "access_block") => {
@@ -1623,100 +1722,95 @@ fn access_title(game: &Game<'_>, t: &Target, mut title: String) -> String {
             let Some(state) = game.pack.assets.registry.state(id) else { return title };
             let prop = |k: &str| state.properties.get(k).cloned();
             let yes = |k: &str| prop(k).as_deref() == Some("true");
-            if prop("open").is_some() && block != "minecraft:barrel" && !yes("open") {
-                wrap("Closed {0}");
+            if prop("open").is_some() && block != "minecraft:barrel" {
+                wrap(&if yes("open") { tr("jade.access.block.door_open", "{0}") } else { tr("jade.access.block.door_closed", "Closed {0}") });
             }
             for (key, pattern) in [("waterlogged", "Waterlogged {0}"), ("lit", "Lit {0}"), ("inverted", "Inverted {0}"), ("eye", "{0} with Eye"), ("ominous", "Ominous {0}")] {
                 if yes(key) {
-                    wrap(pattern);
+                    wrap(&tr(&format!("jade.access.block.{key}"), pattern));
                 }
             }
             if prop("moisture").as_deref() == Some("7") {
-                wrap("Hydrated {0}");
+                wrap(&tr("jade.access.block.hydrated", "Hydrated {0}"));
             }
-            for (key, pattern) in [("locked", "Locked {0}"), ("extended", "Extended {0}"), ("can_summon", "Summonable {0}")] {
+            for (key, lang, pattern) in [("locked", "jade.access.block.locked", "Locked {0}"), ("extended", "jade.access.block.extended", "Extended {0}"), ("can_summon", "jade.access.block.summonable", "Summonable {0}")] {
                 if yes(key) {
-                    wrap(pattern);
+                    wrap(&tr(lang, pattern));
                 }
             }
             if block.ends_with("_stairs") && prop("half").as_deref() == Some("top") {
-                wrap("Upside-down {0}");
+                wrap(&tr("jade.access.block.upside_down", "Upside-down {0}"));
             }
             match prop("hatch").as_deref() {
-                Some("1") => wrap("Slightly Cracked {0}"),
-                Some("2") => wrap("Cracked {0}"),
+                Some("1") => wrap(&tr("jade.access.block.hatch.1", "Slightly Cracked {0}")),
+                Some("2") => wrap(&tr("jade.access.block.hatch.2", "Cracked {0}")),
                 _ => {}
             }
             if yes("powered") && (block == "minecraft:repeater" || block.ends_with("rail") || block.ends_with("_shelf")) {
-                wrap("Powered {0}");
+                wrap(&tr("jade.access.block.powered", "Powered {0}"));
             }
             let active = prop("vault_state").as_deref() == Some("active")
                 || prop("trial_spawner_state").as_deref() == Some("active")
                 || (block == "minecraft:creaking_heart" && prop("creaking_heart_state").as_deref() != Some("uprooted"));
             if active {
-                wrap("Active {0}");
+                wrap(&tr("jade.access.block.active", "Active {0}"));
             }
             // WaxedProvider.BlockComponent.
             if on(game, "waxed")
                 && let Some(horizon_client::containers::BlockEntity::Sign(sign)) = game.world.block_entities.get(&(pos[0], pos[1], pos[2]))
                 && sign.waxed
             {
-                wrap("Waxed {0}");
+                wrap(&tr("jade.access.waxed", "Waxed {0}"));
             }
         }
         // EntityDetailsProvider.
         Target::Mob { index } if access(game, "access_entity") => {
             let Some(m) = game.mobs.get(*index) else { return title };
             match m.kind.id.as_ref() {
-                "minecraft:creeper" if m.extra.charged => wrap("Charged {0}"),
-                "minecraft:wither" if m.health <= m.attrs.max_health / 2.0 => wrap("Powered {0}"),
-                "minecraft:zombie_villager" if horizon_client::mobs::zombie_villager::cure(m).is_some() => wrap("Curing {0}"),
-                "minecraft:goat" if m.extra.lost_horns == [true, true] => wrap("Hornless {0}"),
+                "minecraft:creeper" if m.extra.charged => wrap(&tr("jade.access.creeper.powered", "Charged {0}")),
+                "minecraft:wither" if m.health <= m.attrs.max_health / 2.0 => wrap(&tr("jade.access.wither.powered", "Powered {0}")),
+                "minecraft:zombie_villager" if horizon_client::mobs::zombie_villager::cure(m).is_some() => wrap(&tr("jade.access.zombie_villager.curing", "Curing {0}")),
+                "minecraft:goat" if m.extra.lost_horns == [true, true] => wrap(&tr("jade.access.goat.hornless", "Hornless {0}")),
                 "minecraft:bee" => {
                     if horizon_client::mobs::bee::has_nectar(m) {
-                        wrap("Nectarean {0}");
+                        wrap(&tr("jade.access.bee.nectar", "Nectarean {0}"));
                     }
                     if m.extra.anger > 0 {
-                        wrap("Angry {0}");
+                        wrap(&tr("jade.access.entity.angry", "Angry {0}"));
                     }
                 }
                 // jade.access.slime.size.
-                "minecraft:slime" | "minecraft:magma_cube" => wrap(match m.extra.size {
-                    i32::MIN..=1 => "Small {0}",
-                    2..=3 => "Medium {0}",
-                    4..=7 => "Large {0}",
-                    _ => "Huge {0}",
-                }),
+                "minecraft:slime" | "minecraft:magma_cube" => wrap(&trf("jade.access.slime.size", "{1,choice,1#Small|2≤Medium|4≤Large|8≤Huge} {0}", &["{0}", &m.extra.size.to_string()])),
                 "minecraft:copper_golem" => match m.extra.variant {
-                    1 => wrap("Exposed {0}"),
-                    2 => wrap("Weathered {0}"),
-                    3 => wrap("Oxidized {0}"),
+                    1 => wrap(&tr("jade.access.entity.exposed", "Exposed {0}")),
+                    2 => wrap(&tr("jade.access.entity.weathered", "Weathered {0}")),
+                    3 => wrap(&tr("jade.access.entity.oxidized", "Oxidized {0}")),
                     _ => {}
                 },
                 _ => {}
             }
             if m.is_baby() {
-                wrap("Baby {0}");
+                wrap(&tr("jade.access.entity.baby", "Baby {0}"));
             }
             // CommonProxy.isShearable: `readyForShearing`, and a baby sheep or mooshroom isn't.
             match m.kind.id.as_ref() {
                 "minecraft:copper_golem" => {
                     let shears_take = m.saddle_item().is_some_and(|a| game.res.items().item_tags.get("minecraft:shearable_from_copper_golem").is_some_and(|t| t.contains(&*a.item)));
                     if shears_take {
-                        wrap("Shearable {0}");
+                        wrap(&tr("jade.access.entity.shearable", "Shearable {0}"));
                     }
                 }
-                "minecraft:sheep" | "minecraft:mooshroom" if m.is_baby() || m.extra.sheared => wrap("Sheared {0}"),
-                "minecraft:snow_golem" | "minecraft:bogged" if m.extra.sheared => wrap("Sheared {0}"),
+                "minecraft:sheep" | "minecraft:mooshroom" if m.is_baby() || m.extra.sheared => wrap(&tr("jade.access.entity.sheared", "Sheared {0}")),
+                "minecraft:snow_golem" | "minecraft:bogged" if m.extra.sheared => wrap(&tr("jade.access.entity.sheared", "Sheared {0}")),
                 _ => {}
             }
             if &*m.kind.id == "minecraft:sheep"
                 && let Some(color) = DYES.get(usize::from(m.extra.color))
             {
-                wrap(&format!("{color} {{0}}"));
+                wrap(&tr(&format!("jade.access.entity.{}", color.to_lowercase().replace(' ', "_")), &format!("{color} {{0}}")));
             }
             if m.extra.saddled {
-                wrap("Saddled {0}");
+                wrap(&tr("jade.access.entity.saddled", "Saddled {0}"));
             }
         }
         _ => {}
@@ -1732,7 +1826,7 @@ fn access_title(game: &Game<'_>, t: &Target, mut title: String) -> String {
             _ => None,
         };
         let description = description.unwrap_or_else(|| game.translate("entity.minecraft.mannequin.label", "NPC"));
-        title = format!("{title} ({description})");
+        title = trf("jade.access.npc_description", "%s (%s)", &[&title, &description]);
     }
     title
 }
@@ -1764,7 +1858,7 @@ fn info_lines(game: &Game<'_>, t: &Target, cfg: &Config, lines: &mut Vec<Line>) 
     {
         const FACES: [([i32; 3], &str); 6] = [([0, -1, 0], "down"), ([0, 1, 0], "up"), ([0, 0, -1], "north"), ([0, 0, 1], "south"), ([-1, 0, 0], "west"), ([1, 0, 0], "east")];
         if let Some((_, name)) = FACES.iter().find(|(d, _)| *d == hit.face) {
-            first.els.push(El::Text(format!("§f ({name})")));
+            first.els.push(El::Text(format!("§f{}", trf("jade.blockFace", " (%s)", &[&tr(&format!("jade.{name}"), name)]))));
         }
     }
     // DistanceProvider, for blocks and entities: its position in Jade's three colours, and how far the crosshair's hit is.
@@ -1790,13 +1884,13 @@ fn info_lines(game: &Game<'_>, t: &Target, cfg: &Config, lines: &mut Vec<Line>) 
             // Relative only while Ctrl is held (JadeUI.hasControlDown).
             let ctrl = game.physical_keys.contains(&winit::keyboard::KeyCode::ControlLeft) || game.physical_keys.contains(&winit::keyboard::KeyCode::ControlRight);
             let at = if on(game, "coordinates_rel") && ctrl { [at[0] - eye[0].floor() as i32, at[1] - eye[1].floor() as i32, at[2] - eye[2].floor() as i32] } else { at };
-            let mut l = format!("§#EF9A9A{} §#A5D6A7{} §#90CAF9{}", at[0], at[1], at[2]);
+            let mut l = trf("jade.blockpos", "%s %s %s", &[&format!("§#EF9A9A{}", at[0]), &format!("§#A5D6A7{}", at[1]), &format!("§#90CAF9{}", at[2])]);
             if cfg.distance {
-                l.push_str(&format!("§r [{d}]"));
+                l.push_str(&format!("§r{}", trf("jade.distance1", " [%s]", &[&d])));
             }
             lines.push(Line::text(l));
         } else {
-            lines.push(Line::text(format!("Distance: {d}")));
+            lines.push(Line::text(trf("jade.distance2", "Distance: %s", &[&d])));
         }
     }
     if let Some((pos, name)) = block {
@@ -1812,8 +1906,8 @@ fn info_lines(game: &Game<'_>, t: &Target, cfg: &Config, lines: &mut Vec<Line>) 
         }
         if cfg.block_properties {
             let facts = game.res.facts().get(id);
-            lines.push(Line::text(format!("Destroy time: §f{}", trim2(f64::from(facts.hardness)))));
-            lines.push(Line::text(format!("Explosion resistance: §f{}", trim2(f64::from(facts.explosion_resistance)))));
+            lines.push(Line::text(trf("jade.block_destroy_time", "Destroy time: %s", &[&format!("§f{}", trim2(f64::from(facts.hardness)))])));
+            lines.push(Line::text(trf("jade.block_explosion_resistance", "Explosion resistance: %s", &[&format!("§f{}", trim2(f64::from(facts.explosion_resistance)))])));
             lines.push(Line::text(format!("Friction: §f{}", trim2(f64::from(facts.friction)))));
             // Block.speedFactor and jumpFactor: the blocks that differ.
             let (speed, jump) = match name {
@@ -1821,8 +1915,8 @@ fn info_lines(game: &Game<'_>, t: &Target, cfg: &Config, lines: &mut Vec<Line>) 
                 "minecraft:honey_block" => (0.4, 0.5),
                 _ => (1.0, 1.0),
             };
-            lines.push(Line::text(format!("Speed factor: §f{}", trim2(speed))));
-            lines.push(Line::text(format!("Jump factor: §f{}", trim2(jump))));
+            lines.push(Line::text(trf("jade.block_speed_factor", "Speed factor: %s", &[&format!("§f{}", trim2(speed))])));
+            lines.push(Line::text(trf("jade.block_jump_factor", "Jump factor: %s", &[&format!("§f{}", trim2(jump))])));
             let fire = |odds: &str| -> Option<i64> {
                 BEHAVIOURS.with_borrow_mut(|b| {
                     let v = b.get_or_insert_with(|| {
@@ -1832,10 +1926,10 @@ fn info_lines(game: &Game<'_>, t: &Target, cfg: &Config, lines: &mut Vec<Line>) 
                 })
             };
             if let Some(n) = fire("igniteOdds") {
-                lines.push(Line::text(format!("Ignite odds: §f{n}")));
+                lines.push(Line::text(trf("jade.block_ignite_odds", "Ignite odds: %s", &[&format!("§f{n}")])));
             }
             if let Some(n) = fire("burnOdds") {
-                lines.push(Line::text(format!("Burn odds: §f{n}")));
+                lines.push(Line::text(trf("jade.block_burn_odds", "Burn odds: %s", &[&format!("§f{n}")])));
             }
         }
         // RegistryNameProvider.ForBlock, Advanced Tooltips: only with the game's F3+H on. The special ids only with it shown.
@@ -1853,7 +1947,7 @@ fn info_lines(game: &Game<'_>, t: &Target, cfg: &Config, lines: &mut Vec<Line>) 
                     if let Some(horizon_world::nbt::Tag::String(j)) = tag.get("id")
                         && let Ok(type_id) = j.to_string()
                     {
-                        lines.push(Line::text(format!("§8BlockEntity: {type_id}")));
+                        lines.push(Line::text(format!("§8{}", trf("config.jade.plugin_jade.registry_name.special.block_entity_type", "BlockEntity: %s", &[&type_id]))));
                     }
                 }
                 // FluidState: a source or a flowing fluid, or a waterlogged block's water.
@@ -1869,11 +1963,11 @@ fn info_lines(game: &Game<'_>, t: &Target, cfg: &Config, lines: &mut Vec<Line>) 
                     _ => None,
                 };
                 if let Some(fluid) = fluid {
-                    lines.push(Line::text(format!("§8Fluid: {fluid}")));
+                    lines.push(Line::text(format!("§8{}", trf("config.jade.plugin_jade.registry_name.special.fluid", "Fluid: %s", &[fluid]))));
                 }
                 // PoiTypes.forState.
                 if let Some((poi, _)) = game.pack.assets.registry.state(id).and_then(horizon_client::save::poi_type) {
-                    lines.push(Line::text(format!("§8POI: {poi}")));
+                    lines.push(Line::text(format!("§8{}", trf("config.jade.plugin_jade.registry_name.special.poi", "POI: %s", &[&poi.to_string()]))));
                 }
             }
         }
@@ -1904,7 +1998,7 @@ fn info_lines(game: &Game<'_>, t: &Target, cfg: &Config, lines: &mut Vec<Line>) 
                 && let Target::Painting { index } = t
                 && let Some(p) = game.paintings.get(*index)
             {
-                lines.push(Line::text(format!("§8Painting: {}", p.variant)));
+                lines.push(Line::text(format!("§8{}", trf("config.jade.plugin_jade.registry_name.special.painting", "Painting: %s", &[&p.variant.to_string()]))));
             }
         }
     }
@@ -1958,10 +2052,10 @@ fn energy_lines(game: &Game<'_>, pos: [i32; 3], lines: &mut Vec<String>) {
     let Some(energy) = found.filter(|e| e.capacity > 0) else { return };
     let (current, max) = (human(i64::from(energy.amount), "FE"), human(i64::from(energy.capacity), "FE"));
     lines.push(match opt(game, "energy_style").as_str() {
-        "plain" => format!("Energy: {current} / {max}"),
+        "plain" => trf("jade.energy.text", "Energy: %s", &[&trf("jade.fe", "%s / %s", &[&current, &max])]),
         // Jade's energy sprite isn't in Horizon's atlas: redstone, the provider's config icon's dust.
-        "icon" => encode(&Line::new().with(Line::small("minecraft:redstone")).with(El::Text(format!("{current} / {max}")))),
-        _ => encode(&Line::new().with(El::Bar { frac: (energy.amount as f32 / energy.capacity as f32).clamp(0.0, 1.0), color: 0xB01010, text: format!("§f{current}§r / {max}") })),
+        "icon" => encode(&Line::new().with(Line::small("minecraft:redstone")).with(El::Text(trf("jade.fe", "%s / %s", &[&current, &max])))),
+        _ => encode(&Line::new().with(El::Bar { frac: (energy.amount as f32 / energy.capacity as f32).clamp(0.0, 1.0), color: 0xB01010, text: trf("jade.fe", "%s / %s", &[&format!("§f{current}§r"), &max]) })),
     });
 }
 
@@ -1999,7 +2093,7 @@ fn spawner_title(game: &Game<'_>, s: &horizon_client::mobs::spawner::Spawner) ->
         None => s.potentials.first().map(|(d, _)| d),
     }?;
     let name = spawn_data_name(game, data)?;
-    Some(encode(&Line::new().with(El::Title(format!("{{0}} ({name})")))))
+    Some(encode(&Line::new().with(El::Title(trf("jade.spawner", "%s (%s)", &["{0}", &name])))))
 }
 
 /// ItemStorageProvider's check on a container whose loot isn't rolled out to a player yet (RandomizableContainer's loot
@@ -2030,7 +2124,7 @@ fn vanilla_server(game: &mut Game<'_>, player: u128, pos: [i32; 3], block: &str,
         let at = BlockPos::new(pos[0], pos[1], pos[2]);
         if block == "minecraft:comparator" {
             let n = game.with_level(|_, _, ticks| ticks.comparator_outputs.get(&at).copied()).unwrap_or(0);
-            lines.push(format!("Power: §f{n}"));
+            lines.push(trf("tooltip.jade.power", "Power: %d", &[&format!("§f{n}")]));
         } else if block == "minecraft:calibrated_sculk_sensor" {
             // CalibratedSculkSensorBlockEntity's back signal: `level.getSignal` behind it, as the sensor itself reads it.
             let n = game.with_level(|b, level, ticks| b.calibrated_back_signal(level, ticks, at));
@@ -2061,14 +2155,14 @@ fn vanilla_server(game: &mut Game<'_>, player: u128, pos: [i32; 3], block: &str,
     if let Some((table, seed)) = unopened_loot(game, key, be, block) {
         // BlockLootTableProvider: for game masters.
         if on(game, "loot_table") && asking.as_ref().is_some_and(|p| p.permission >= 2) {
-            lines.push(format!("Loot Table: {table}"));
-            lines.push(format!("Seed: {}", seed.unwrap_or(0)));
+            lines.push(trf("jade.lootTable", "Loot Table: %s", &[&table]));
+            lines.push(trf("jade.lootTableSeed", "Seed: %s", &[&seed.unwrap_or(0).to_string()]));
         }
-        lines.push("§oWhat could it be?".to_owned());
+        lines.push(tr("jade.loot_not_generated", "§oWhat could it be?"));
         return;
     }
     if !privileged && game.world.block_lock(key).is_some() {
-        lines.push("Inventory is locked".to_owned());
+        lines.push(tr("jade.locked", "Inventory is locked"));
         return;
     }
     let item = |s: &Option<ItemStack>| s.as_ref().map_or_else(|| Line::item("minecraft:air", 0), |s| Line::item(&s.item, s.count));
@@ -2095,7 +2189,7 @@ fn vanilla_server(game: &mut Game<'_>, player: u128, pos: [i32; 3], block: &str,
         Be::Chest(items) => {
             // HopperLockProvider: a locked hopper's title.
             if block == "minecraft:hopper" && game.native_block_property(pos, "enabled").as_deref() == Some("false") && on(game, "redstone") {
-                lines.push(encode(&Line::new().with(El::Title("Locked {0}".to_owned()))));
+                lines.push(encode(&Line::new().with(El::Title(tr("jade.access.block.locked", "Locked {0}")))));
             }
             storage(game, details, lines, items.iter().flatten());
         }
@@ -2131,7 +2225,7 @@ fn vanilla_server(game: &mut Game<'_>, player: u128, pos: [i32; 3], block: &str,
                 let name = item_name(game, &r.item);
                 lines.push(encode(&Line::new().with(Line::small(&r.item)).with(El::Text(format!("§f{name}")))));
             } else {
-                lines.push("§7Empty".to_owned());
+                lines.push(format!("§7{}", tr("tooltip.jade.empty", "Empty")));
             }
         }
         // LecternProvider: the book.
@@ -2142,7 +2236,7 @@ fn vanilla_server(game: &mut Game<'_>, player: u128, pos: [i32; 3], block: &str,
             }
         }
         // BeehiveProvider: the bees inside.
-        Be::Beehive(h) if on(game, "beehive") => lines.push(format!("Bees: §f{} / 3", h.bees.len())),
+        Be::Beehive(h) if on(game, "beehive") => lines.push(trf("jade.beehive.bees", "Bees: %s", &[&format!("§f{}", trf("jade.fraction", "%d / %d", &[&h.bees.len().to_string(), "3"]))])),
         // CommandBlockProvider: its command.
         Be::CommandBlock(c) if on(game, "command_block") => {
             if !c.command.is_empty() {
@@ -2185,11 +2279,11 @@ fn vanilla_server(game: &mut Game<'_>, player: u128, pos: [i32; 3], block: &str,
                 slot.config.spawn_potentials.first().map(|(d, _)| d)
             });
             if let Some(name) = next.and_then(|d| spawn_data_name(game, d)) {
-                lines.push(encode(&Line::new().with(El::Title(format!("{{0}} ({name})")))));
+                lines.push(encode(&Line::new().with(El::Title(trf("jade.spawner", "%s (%s)", &["{0}", &name])))));
             }
             let now = game.world.game_time;
             if t.cooldown_ends_at > now {
-                lines.push(format!("Cooldown: §f{}", seconds(t.cooldown_ends_at - now)));
+                lines.push(trf("jade.trial_spawner_cd", "Cooldown: %s", &[&format!("§f{}", seconds(t.cooldown_ends_at - now))]));
             }
         }
         _ => {}
@@ -2272,8 +2366,8 @@ fn fluid_line_styled(game: &Game<'_>, name: Option<&str>, fluid: Option<&str>, m
         return fluid_line(name, fluid, mb, capacity, details);
     }
     let text = match name {
-        Some(n) if mb > 0 => format!("{n} §f{} mB", commas(mb.into())),
-        _ => format!("Empty {} mB", commas(capacity.into())),
+        Some(n) if mb > 0 => trf("jade.fluid", "%s %s", &[n, &format!("§f{} mB", commas(mb.into()))]),
+        _ => trf("jade.fluid", "%s %s", &[&tr("jade.fluid.empty", "Empty"), &format!("{} mB", commas(capacity.into()))]),
     };
     let mut line = Line::new();
     if style == "icon" {
@@ -2292,9 +2386,14 @@ fn fluid_line(name: Option<&str>, fluid: Option<&str>, mb: i32, capacity: i32, d
     };
     let text = match name {
         Some(n) if mb > 0 => {
-            if details { format!("{n} §f{} mB§r / {} mB", commas(mb.into()), commas(capacity.into())) } else { format!("{n} §f{} mB", commas(mb.into())) }
+            if details {
+                let amounts = trf("jade.fluid.with_capacity", "%s / %s", &[&format!("§f{} mB§r", commas(mb.into())), &format!("{} mB", commas(capacity.into()))]);
+                trf("jade.fluid", "%s %s", &[n, &amounts])
+            } else {
+                trf("jade.fluid", "%s %s", &[n, &format!("§f{} mB", commas(mb.into()))])
+            }
         }
-        _ => format!("Empty {} mB", commas(capacity.into())),
+        _ => trf("jade.fluid", "%s %s", &[&tr("jade.fluid.empty", "Empty"), &format!("{} mB", commas(capacity.into()))]),
     };
     encode(&Line::new().with(El::Bar { frac: mb as f32 / capacity.max(1) as f32, color, text }))
 }
@@ -2533,7 +2632,7 @@ fn apply_directives(game: &Game<'_>, lines: &mut Vec<Line>, icon: &mut Option<St
     if let Some(El::Text(title)) = lines.first_mut().and_then(|l| l.els.first_mut()) {
         for pattern in &titles {
             let now = title.strip_prefix("§f").unwrap_or(title.as_str()).to_owned();
-            *title = format!("§f{}", pattern.replace("{0}", &now));
+            *title = format!("§f{}", fill(pattern, &[&now]));
         }
     }
     // EntityHealthAndArmorProvider.Client: both on one line only when both are numbers.
@@ -3151,7 +3250,8 @@ pub fn hud(game: &mut Game<'_>, batch: &mut HudBatch) {
         let slot = shelf_slot(game, *pos, block);
         let ask = !hidden && CLIENT.with_borrow(|c| c.asked.is_none_or(|(p, at)| p != *pos || at.elapsed().as_millis() > 250) || c.asked_details != details || c.asked_slot != slot);
         if ask {
-            let msg = format!("{} {} {} {} {slot}{}", pos[0], pos[1], pos[2], u8::from(details), request_off_list(game));
+            let hit = CLIENT.with_borrow(|c| c.hit_point).map(|v| (v * 4096.0).round() as i64);
+            let msg = format!("{} {} {} {} {slot} {} {} {}{}", pos[0], pos[1], pos[2], u8::from(details), hit[0], hit[1], hit[2], request_off_list(game));
             if game.native_net_send_to_server(NET_REQUEST, msg.as_bytes()).is_ok() {
                 CLIENT.with_borrow_mut(|c| {
                     c.asked = Some((*pos, std::time::Instant::now()));
@@ -3704,13 +3804,24 @@ fn out_of_reach(game: &Game<'_>, player: u128, at: [f64; 3], base: f64) -> bool 
     (0..3).map(|i| (p.position[i].floor() - at[i].floor()).powi(2)).sum::<f64>() > most * most
 }
 
+thread_local! {
+    /// Where the player answered for right now is looking on the block.
+    static REQUEST_HIT: RefCell<Option<[f64; 3]>> = const { RefCell::new(None) };
+}
+
+/// While a server provider answers: the point on the block the player looks at.
+pub fn request_hit() -> Option<[f64; 3]> {
+    REQUEST_HIT.with_borrow(|h| *h)
+}
+
 /// A player asks for a block's lines: its position, Show Details and the slot they point at.
 fn block_request(game: &mut Game<'_>, player: u128, text: &str) {
-    let v: Vec<i32> = text.split(' ').filter_map(|s| s.parse().ok()).collect();
+    let v: Vec<i64> = text.split(' ').filter_map(|s| s.parse().ok()).collect();
     let [x, y, z, rest @ ..] = v.as_slice() else { return };
-    let pos = [*x, *y, *z];
+    let pos = [*x as i32, *y as i32, *z as i32];
     let details = rest.first().is_some_and(|d| *d != 0);
-    let slot = rest.get(1).copied().unwrap_or(-1);
+    let slot = rest.get(1).copied().unwrap_or(-1) as i32;
+    REQUEST_HIT.with_borrow_mut(|h| *h = rest.get(2..5).map(|p| [p[0] as f64 / 4096.0, p[1] as f64 / 4096.0, p[2] as f64 / 4096.0]));
     // BlockAccessorImpl: within reach of the player only (a client can ask anything).
     if out_of_reach(game, player, pos.map(f64::from), 4.5) {
         return;
@@ -3745,7 +3856,7 @@ fn vehicle_request(game: &mut Game<'_>, player: u128, text: &str) {
         }
         // ItemStorageProvider.putData: a loot table not rolled yet.
         if c.loot.is_some() {
-            lines.push("§oWhat could it be?".to_owned());
+            lines.push(tr("jade.loot_not_generated", "§oWhat could it be?"));
         } else if on(game, "container_entity") {
             storage(game, details, &mut lines, c.items.iter().flatten());
         }
@@ -3810,7 +3921,7 @@ fn mob_server_lines(game: &Game<'_>, m: &horizon_client::mobs::Mob, player: u128
         const WEATHER: [&str; 4] = ["", "exposed_", "weathered_", "oxidized_"];
         let mut l = Line::new().with(El::Icon(format!("minecraft:waxed_{}copper_golem_statue", WEATHER[usize::from(m.extra.variant.min(3))]))).with(El::Badge);
         if access(game, "access_entity") {
-            l = l.with(El::Title("Waxed {0}".to_owned()));
+            l = l.with(El::Title(tr("jade.access.waxed", "Waxed {0}")));
         }
         lines.push(encode(&l));
     }
@@ -3825,7 +3936,7 @@ fn mob_server_lines(game: &Game<'_>, m: &horizon_client::mobs::Mob, player: u128
             let (ns, path) = kind.split_once(':').unwrap_or(("minecraft", kind));
             format!("{ns}:entities/{path}")
         });
-        lines.push(format!("Loot Table: {table}"));
+        lines.push(trf("jade.lootTable", "Loot Table: %s", &[&table]));
     }
 }
 
@@ -3835,31 +3946,34 @@ fn mob_lines(m: &horizon_client::mobs::Mob, game_time: i64, details: bool, resto
     let kind = m.kind.id.as_ref();
     // MobGrowthProvider: a baby's growing time (AgeableMob.age counts up to 0).
     if growth && m.extra.age < 0 {
-        lines.push(Line::text(if m.extra.age_locked { "Growing time: §fPaused".to_owned() } else { format!("Growing time: §f{}", seconds(-i64::from(m.extra.age))) }));
+        let left = if m.extra.age_locked { tr("jade.mobgrowth.paused", "Paused") } else { seconds(-i64::from(m.extra.age)) };
+        lines.push(Line::text(trf("jade.mobgrowth.time", "Growing time: %s", &[&format!("§f{left}")])));
     }
     // MobBreedingProvider: an allay's duplication cooldown; in love, or the breeding cooldown (age above 0).
     if breeding && kind == "minecraft:allay" {
         if m.extra.egg_time > 0 {
-            lines.push(Line::text(format!("Duplication CD: §f{}", seconds(i64::from(m.extra.egg_time)))));
+            lines.push(Line::text(trf("jade.mobduplication.time", "Duplication CD: %s", &[&format!("§f{}", seconds(i64::from(m.extra.egg_time)))])));
         }
     } else if breeding && m.extra.in_love > 0 {
-        lines.push(Line::text("Breeding CD: §fIn Love"));
+        // One string in the language files, its colour where English's colon is.
+        lines.push(Line::text(tr("jade.mobbreeding.fed", "Breeding CD: In Love").replacen(": ", ": §f", 1)));
     } else if breeding && m.extra.age > 0 {
-        lines.push(Line::text(format!("Breeding CD: §f{}", seconds(i64::from(m.extra.age)))));
+        lines.push(Line::text(trf("jade.mobbreeding.time", "Breeding CD: %s", &[&format!("§f{}", seconds(i64::from(m.extra.age)))])));
     }
     // HorseStatsProvider: a llama's strength; a horse's jump height and speed (out of the most with Show Details).
-    let stat = |name: &str, v: f64, most: f64| {
+    let stat = |key: &str, english: &str, v: f64, most: f64| {
         let v = trim2(v);
-        if details { format!("{name}: §f{v} / {}", trim2(most)) } else { format!("{name}: §f{v}") }
+        let shown = if details { trf("jade.fraction", "%d / %d", &[&v, &trim2(most)]) } else { v };
+        trf(key, english, &[&format!("§f{shown}")])
     };
     match kind {
         _ if !entity_stats => {}
-        "minecraft:llama" | "minecraft:trader_llama" => lines.push(Line::text(stat("Strength", f64::from(m.extra.variant2.max(1)), 5.0))),
+        "minecraft:llama" | "minecraft:trader_llama" => lines.push(Line::text(stat("jade.llamaStrength", "Strength: %s", f64::from(m.extra.variant2.max(1)), 5.0))),
         "minecraft:horse" | "minecraft:donkey" | "minecraft:mule" | "minecraft:skeleton_horse" | "minecraft:zombie_horse" => {
             let jump = |j: f64| 4.53680079 * j * j + 1.6143173 * j - 0.22656224;
             let speed = |v: f64| v * 43.17181546666666 - 3.39999999E-7;
-            lines.push(Line::text(stat("Jump height", jump(m.attrs.jump_strength), jump(1.0))));
-            lines.push(Line::text(stat("Speed", speed(m.attrs.speed), speed(0.3375))));
+            lines.push(Line::text(stat("jade.horseStat.jump", "Jump height: %s", jump(m.attrs.jump_strength), jump(1.0))));
+            lines.push(Line::text(stat("jade.horseStat.speed", "Speed: %s", speed(m.attrs.speed), speed(0.3375))));
         }
         _ => {}
     }
@@ -3869,12 +3983,12 @@ fn mob_lines(m: &horizon_client::mobs::Mob, game_time: i64, details: bool, resto
         && let Some(c) = horizon_client::mobs::zombie_villager::cure(m)
         && c.time > 0
     {
-        lines.push(Line::text(format!("Conversion time: §f{}", seconds(i64::from(c.time)))));
+        lines.push(Line::text(trf("jade.zombieConversion.time", "Conversion time: %s", &[&format!("§f{}", seconds(i64::from(c.time)))])));
     }
     // NextEntityDropProvider: a grown chicken's next egg, an armadillo's next scute.
     if drops && matches!(kind, "minecraft:chicken" | "minecraft:armadillo") && !m.is_baby() && m.extra.egg_time < 48000 {
-        let what = if kind == "minecraft:chicken" { "Next egg" } else { "Next scute" };
-        lines.push(Line::text(format!("{what}: §f{}", seconds(i64::from(m.extra.egg_time)))));
+        let (key, english) = if kind == "minecraft:chicken" { ("jade.nextEgg", "Next egg: %s") } else { ("jade.nextScute", "Next scute: %s") };
+        lines.push(Line::text(trf(key, english, &[&format!("§f{}", seconds(i64::from(m.extra.egg_time)))])));
     }
     // NextEntityDropProvider: a sniffer's dig cooldown (its sniff_cooldown memory).
     if drops && kind == "minecraft:sniffer" && !m.is_baby()
@@ -3883,7 +3997,7 @@ fn mob_lines(m: &horizon_client::mobs::Mob, game_time: i64, details: bool, resto
     {
         let left = mem.sniff_cooldown.hz_jade_ttl();
         if left > 0 && left < 48000 {
-            lines.push(Line::text(format!("Dig CD: §f{}", seconds(left))));
+            lines.push(Line::text(trf("jade.nextSniff", "Dig CD: %s", &[&format!("§f{}", seconds(left))])));
         }
     }
     // VillagerRestockProvider (off by default): ready, or when the next restock can be (two a day, 2400 ticks
@@ -3896,11 +4010,11 @@ fn mob_lines(m: &horizon_client::mobs::Mob, game_time: i64, details: bool, resto
         let interval: i64 = if limit { 12000 } else { 2400 };
         let left = trade.last_restock + interval - game_time;
         lines.push(Line::text(if left <= 0 {
-            "§aReady to restock".to_owned()
+            format!("§a{}", tr("jade.villagerRestock.ready", "Ready to restock"))
         } else if limit {
-            format!("Restock limit reached, next in §f{}", seconds(left))
+            trf("jade.villagerRestock.limit", "Restock limit reached, next in %s", &[&format!("§f{}", seconds(left))])
         } else {
-            format!("Restock in §f{}", seconds(left))
+            trf("jade.villagerRestock.time", "Restock in %s", &[&format!("§f{}", seconds(left))])
         }));
     }
     lines
