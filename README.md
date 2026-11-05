@@ -22,7 +22,7 @@ Jade's mouse binds, such as a mouse button for Show Overlay.
 
 ## Install
 
-`jade-26.3.5.hnmod` in this repository is the packaged native mod, checked with `cargo horizon-mod check`. It's built
+`jade-26.3.6.hnmod` in this repository is the packaged native mod, checked with `cargo horizon-mod check`. It's built
 for the Horizon commit named below and needs no other mod.
 
 ## Build
