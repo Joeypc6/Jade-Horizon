@@ -6,17 +6,19 @@ settings under Options > Mods, and its keys.
 
 ## What differs from Jade
 
-Rewritten in Rust for Horizon's hooks, so no original code runs. Other mods register with this port's own provider
-functions, not Jade's Java API. Themes, opacity, text background, profiles, the ignore lists, boss bar overlap,
-TTS, perspective mode, reach, icon positions, the `/jade` and `/jadec` commands, the item mod name and the plugin
-sub-options are ported. These still differ:
+Rewritten in Rust for Horizon's hooks, so no original code runs. Its overlay, providers, themes, config screens, drag-to-place
+screen, profiles, `/jade` and `/jadec` commands and the `jade:max_position_deviation` game rule are ported.
 
-- Themes are drawn with solid fills in the theme's colours, not Jade's sprites.
-- The position adjust screen is a setting you cycle through, not a screen you drag on.
-- The sniffer's dig cooldown isn't shown (Horizon's client has no such value).
-- Energy Storage has nothing to show: Horizon has no shared energy API for other mods.
-- Access variant and NPC details are approximate.
-- Dedicated servers: Horizon doesn't build native mods for them, so "server" here means a LAN host.
+### Missing or not the same
+
+- **Jade's Java API.** Java plugins for Jade can't run. Other mods register with this port's own provider functions.
+- **Energy icon.** Jade's energy sprite isn't in Horizon's atlas, so the icon style of the energy line shows redstone dust.
+- **The game rule** works through mixins on tables compiled into the game, so it is the part most likely to break on a
+  Horizon update.
+
+### Not tested
+
+Jade's mouse binds, such as a mouse button for Show Overlay.
 
 ## Install
 
@@ -38,7 +40,8 @@ horizon-launcher native-build "path/to/that/folder" --trust-native-code
 ## Status
 
 An unofficial port, not made or endorsed by the original authors. Please report problems here, not to them.
-It was tested on Windows, in single player and on LAN with one guest. Other platforms and dedicated servers were not tested.
+It was tested on Windows, in single player, on LAN with one guest, and on a dedicated server with one client. Other platforms were not tested.
+A Horizon update can break it until it is rebuilt: it is built for the one Horizon commit named under Build.
 
 ## Credits and licence
 
