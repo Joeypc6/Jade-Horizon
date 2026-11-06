@@ -709,8 +709,8 @@ pub fn opt(game: &Game<'_>, key: &'static str) -> String {
 }
 
 pub fn on(game: &Game<'_>, key: &'static str) -> bool {
-    if let Some(says) = request_says(key) {
-        return says;
+    if request_says(key) == Some(false) {
+        return false;
     }
     let epoch = SETTINGS_EPOCH.load(std::sync::atomic::Ordering::Relaxed);
     // The common case without a copy: the overlay asks for many each frame.
@@ -2236,8 +2236,10 @@ fn vanilla_server(game: &mut Game<'_>, player: u128, pos: [i32; 3], block: &str,
         // BeehiveProvider: the bees inside.
         Be::Beehive(h) if on(game, "beehive") => lines.push(trf("jade.beehive.bees", "Bees: %s", &[&format!("§f{}", trf("jade.fraction", "%d / %d", &[&h.bees.len().to_string(), "3"]))])),
         // CommandBlockProvider: its command.
+        // An operator's: commands can hold anything, and any player in reach can ask.
         Be::CommandBlock(c) if on(game, "command_block") => {
-            if !c.command.is_empty() {
+            let allowed = game.native_server_players().into_iter().any(|p| p.uuid == player && p.permission >= 2);
+            if allowed && !c.command.is_empty() {
                 lines.push(format!("§f{}", c.command));
             }
         }
@@ -3780,9 +3782,32 @@ pub fn item_tooltip(game: &Game<'_>, stack: &ItemStack, mut lines: Vec<(horizon_
     lines
 }
 
+/// The most a client may ask: an honest one asks a few times a second for what it looks at.
+const REQUEST_BYTES: usize = 4096;
+const REQUESTS_PER_SECOND: u32 = 60;
+
+fn request_allowed(player: u128) -> bool {
+    thread_local! {
+        static RATES: RefCell<std::collections::HashMap<u128, (std::time::Instant, u32)>> = RefCell::new(std::collections::HashMap::new());
+    }
+    RATES.with_borrow_mut(|rates| {
+        if rates.len() > 4096 {
+            rates.clear();
+        }
+        let now = std::time::Instant::now();
+        let (since, count) = rates.entry(player).or_insert((now, 0));
+        if now.duration_since(*since).as_secs() >= 1 {
+            *since = now;
+            *count = 0;
+        }
+        *count += 1;
+        *count <= REQUESTS_PER_SECOND
+    })
+}
+
 /// `native_net_from_client` (server): a player asks for a block's lines.
 pub fn from_client(game: &mut Game<'_>, player: u128, channel: &str, data: &[u8]) {
-    if channel != NET_REQUEST {
+    if channel != NET_REQUEST || data.len() > REQUEST_BYTES || !request_allowed(player) {
         return;
     }
     let text = String::from_utf8_lossy(data);
@@ -3809,10 +3834,13 @@ pub fn from_client(game: &mut Game<'_>, player: u128, channel: &str, data: &[u8]
 
 /// Jade.isOutOfReach: single player's owner reaches everything; anyone else, the hand's range and the deviation.
 fn out_of_reach(game: &Game<'_>, player: u128, at: [f64; 3], base: f64) -> bool {
-    if game.level.player_uuid == Some(horizon_client::lan::playerdata::uuid_ints(player)) {
+    if game.serving.as_ref().is_some_and(|s| s.owner == player) {
         return false;
     }
     let Some(p) = game.native_server_players().into_iter().find(|p| p.uuid == player) else { return true };
+    if p.dimension != game.dim.id() {
+        return true;
+    }
     let most = base + f64::from(game.ui.rules.int(horizon_client::gamerules::hz_jade_rule::NAME));
     (0..3).map(|i| (p.position[i].floor() - at[i].floor()).powi(2)).sum::<f64>() > most * most
 }

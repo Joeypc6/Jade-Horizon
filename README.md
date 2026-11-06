@@ -22,13 +22,13 @@ Jade's mouse binds, such as a mouse button for Show Overlay.
 
 ## Install
 
-`jade-26.3.6.hnmod` in this repository is the packaged native mod, checked with `cargo horizon-mod check`. It's built
+`jade-26.3.7.hnmod` in this repository is the packaged native mod, checked with `cargo horizon-mod check`. It's built
 for the Horizon commit named below and needs no other mod.
 
 ## Build
 
 This is a [Horizon](https://github.com/horizon-rust/horizon) native mod bundle: Rust mixins compiled into the game.
-It was built and tested on Horizon commit `6475f62` (Minecraft 26.3, native hooks API 359), as `native-6475f62-d72af06acdd9`.
+It was built and tested on Horizon commit `6475f62` (Minecraft 26.3, native hooks API 359), as `native-6475f62-9132faf6f134`.
 Native mods are unsandboxed code that runs with your rights, so read what you build.
 
 Put each bundle's `mixins/<id>` folder in one folder, then:

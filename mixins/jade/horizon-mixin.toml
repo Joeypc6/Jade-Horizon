@@ -1,6 +1,6 @@
 [mod]
 id = "jade"
-version = "26.3.6"
+version = "26.3.7"
 priority = 100
 
 # The Horizon commit this bundle was built and tested on.
