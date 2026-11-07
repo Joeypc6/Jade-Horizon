@@ -48,6 +48,8 @@ pub enum El {
     Hearts { health: f32, max: f32, absorb: f32 },
     Armor(f32),
     Space(f32),
+    /// Jade's energy icon (`jade:energy`).
+    Energy,
     /// The tick or cross after the harvest tool's icon (JadeUI.text(...).scale(0.75F).size(0, 0).offset(-3, 3)).
     Mark(String),
     /// Not drawn: the box's icon becomes this item (IComponentProvider.getIcon, for what only the server knows).
@@ -85,6 +87,10 @@ impl Line {
     }
 }
 
+/// The size Jade's energy icon is drawn, and its sprite (`assets/jade/textures/gui/sprites/energy.png`), x, y and ARGB.
+const ENERGY_ICON: f32 = 9.0;
+const ENERGY_PIXELS: [(u8, u8, u32); 64] = [(9, 0, 0x16F5CF43), (10, 0, 0x18F5C949), (8, 1, 0x01F2EA0C), (9, 1, 0x8AF5CC44), (8, 2, 0x72F5CD43), (9, 2, 0x75F5CC44), (7, 3, 0x33F5CB45), (8, 3, 0xF6F5CC44), (9, 3, 0x1AF5CC44), (6, 4, 0x0CF5C949), (7, 4, 0xDBF5CD44), (8, 4, 0xB9F5CC44), (6, 5, 0xA2F5CC43), (7, 5, 0xFFF5CC44), (8, 5, 0x5CF5CC43), (5, 6, 0x5DF5CC45), (6, 6, 0xFFF5CC44), (7, 6, 0xFFF5CC44), (8, 6, 0xB9F5CC44), (9, 6, 0xB0F5CC44), (10, 6, 0xB0F5CC44), (11, 6, 0xB0F5CC44), (12, 6, 0x4CF5CB45), (4, 7, 0x24F5C942), (5, 7, 0xF3F5CC44), (6, 7, 0xFFF5CC44), (7, 7, 0xFFF5CC44), (8, 7, 0xFFF5CC44), (9, 7, 0xFFF5CC44), (10, 7, 0xFFF5CC44), (11, 7, 0xCCF5CC44), (12, 7, 0x06F4C735), (3, 8, 0x06F4C735), (4, 8, 0xCCF5CC44), (5, 8, 0xFFF5CC44), (6, 8, 0xFFF5CC44), (7, 8, 0xFFF5CC44), (8, 8, 0xFFF5CC44), (9, 8, 0xFFF5CC44), (10, 8, 0xF3F5CC44), (11, 8, 0x24F5C942), (3, 9, 0x4CF5CB45), (4, 9, 0xB0F5CC44), (5, 9, 0xB0F5CC44), (6, 9, 0xB0F5CC44), (7, 9, 0xB9F5CC44), (8, 9, 0xFFF5CC44), (9, 9, 0xFFF5CC44), (10, 9, 0x5DF5CC45), (7, 10, 0x5CF5CC43), (8, 10, 0xFFF5CC44), (9, 10, 0xA2F5CC43), (7, 11, 0xB9F5CC44), (8, 11, 0xDBF5CD44), (9, 11, 0x0CF5C949), (6, 12, 0x1AF5CC44), (7, 12, 0xF6F5CC44), (8, 12, 0x33F5CB45), (6, 13, 0x75F5CC44), (7, 13, 0x72F5CD43), (6, 14, 0x8AF5CC44), (7, 14, 0x01F2EA0C), (5, 15, 0x18F5C949), (6, 15, 0x16F5CF43)];
+
 /// A line as a server line's text: elements apart by `\u{1f}`, each but text starting `\u{1}`.
 pub fn encode(line: &Line) -> String {
     let parts: Vec<String> = line
@@ -104,6 +110,7 @@ pub fn encode(line: &Line) -> String {
             El::Hearts { health, max, absorb } => format!("\u{1}h {health} {max} {absorb}"),
             El::Armor(a) => format!("\u{1}r {a}"),
             El::Space(w) => format!("\u{1}s {w}"),
+            El::Energy => "\u{1}e".to_owned(),
         })
         .collect();
     parts.join("\u{1f}")
@@ -131,6 +138,7 @@ fn decode(s: &str) -> Line {
             Some("h") => line.els.push(El::Hearts { health: f(1), max: f(2), absorb: f(3) }),
             Some("r") => line.els.push(El::Armor(f(1))),
             Some("s") => line.els.push(El::Space(f(1))),
+            Some("e") => line.els.push(El::Energy),
             Some("m") => line.els.push(El::Small(cmd.get(2..).unwrap_or("").to_owned())),
             Some("k") => line.els.push(El::Mark(cmd.get(2..).unwrap_or("").to_owned())),
             Some("I") => line.els.push(El::Icon(w.get(1).copied().unwrap_or("minecraft:air").to_owned())),
@@ -981,7 +989,7 @@ fn target(game: &Game<'_>) -> Option<Target> {
             entity = Some((d, t));
         }
     };
-    if let Some((i, d)) = game.mob_hit() {
+    if let Some((i, d, _)) = game.mob_hit() {
         offer(d, Target::Mob { index: i });
     }
     if let Some((i, d)) = game.frame_hit() {
@@ -2051,8 +2059,7 @@ fn energy_lines(game: &Game<'_>, pos: [i32; 3], lines: &mut Vec<String>) {
     let (current, max) = (human(i64::from(energy.amount), "FE"), human(i64::from(energy.capacity), "FE"));
     lines.push(match opt(game, "energy_style").as_str() {
         "plain" => trf("jade.energy.text", "Energy: %s", &[&trf("jade.fe", "%s / %s", &[&current, &max])]),
-        // Jade's energy sprite isn't in Horizon's atlas: redstone, the provider's config icon's dust.
-        "icon" => encode(&Line::new().with(Line::small("minecraft:redstone")).with(El::Text(trf("jade.fe", "%s / %s", &[&current, &max])))),
+        "icon" => encode(&Line::new().with(El::Energy).with(El::Text(trf("jade.fe", "%s / %s", &[&current, &max])))),
         _ => encode(&Line::new().with(El::Bar { frac: (energy.amount as f32 / energy.capacity as f32).clamp(0.0, 1.0), color: 0xB01010, text: trf("jade.fe", "%s / %s", &[&format!("§f{current}§r"), &max]) })),
     });
 }
@@ -2247,7 +2254,7 @@ fn vanilla_server(game: &mut Game<'_>, player: u128, pos: [i32; 3], block: &str,
         Be::Spawner(s) if on(game, "mob_spawner") => lines.extend(spawner_title(game, s)),
         // A mod's machine: EnergyStorageProvider, ItemStorageProvider, FluidStorageProvider, ProgressProvider.
         Be::Mod(m) => {
-            if on(game, "energy_storage") && ((details && !ae2) || !on(game, "energy_detailed")) {
+            if on(game, "energy_storage") && !ae2 && (details || !on(game, "energy_detailed")) {
                 energy_lines(game, pos, lines);
             }
             storage(game, details, lines, m.items.iter().flatten());
@@ -2465,6 +2472,7 @@ fn size(game: &Game<'_>, e: &El) -> (f32, f32) {
             }
         }
         El::Space(w) => (*w, 0.0),
+        El::Energy => (ENERGY_ICON + 1.0, ENERGY_ICON),
         El::Mark(_) | El::Icon(_) | El::Badge | El::Title(_) | El::Stats { .. } => (0.0, 0.0),
     }
 }
@@ -2583,6 +2591,13 @@ fn draw_el(game: &Game<'_>, batch: &mut HudBatch, e: &El, x: f32, y: f32, h: f32
             let start = batch.vertices.len();
             batch.text_styled(atlas, &rich(&look.map(t)), mx, my, look.base, look.shadow);
             batch.scale_since(start, mx, my, 0.75, 0.75);
+        }
+        // Each of the sprite's pixels, as the game's atlas has no room kept for a mod's without a content pack.
+        El::Energy => {
+            let scale = ENERGY_ICON / 16.0;
+            for (px, py, argb) in ENERGY_PIXELS {
+                game.native_fill(batch, [x + px as f32 * scale, y + py as f32 * scale, scale, scale], argb);
+            }
         }
         El::Space(_) | El::Icon(_) | El::Badge | El::Title(_) | El::Stats { .. } => {}
     }
@@ -2963,7 +2978,7 @@ pub fn settings_changed() {
 /// `/jadec ...` (JadeClientCommand) on the player's own client, `/jade ...` to the server.
 pub fn client_command(game: &mut Game<'_>, command: &str, ran: &mut bool) {
     // A guest's `/jade` that reached the server's dispatcher is theirs, not this client's. `/jadec` is always the client's own.
-    if command.split_whitespace().next() == Some("jade")
+    if matches!(command.split_whitespace().next(), Some("jade" | "gamerule"))
         && let Some(player) = game.native_acting_player()
     {
         perform_command(game, &player, command, ran);
@@ -3060,6 +3075,11 @@ fn server_command(game: &mut Game<'_>, from: u128, level: u8, args: &[&str]) {
 
 /// `native_perform_command`: a LAN guest's `/jade`.
 pub fn perform_command(game: &mut Game<'_>, player: &crate::game::native_server::NativeServerPlayer, command: &str, ran: &mut bool) {
+    let all: Vec<&str> = command.split_whitespace().collect();
+    if rule_command(game, player.uuid, &all, player.permission) {
+        *ran = true;
+        return;
+    }
     let mut words = command.split_whitespace();
     if words.next() == Some("jade") {
         *ran = true;
@@ -3070,6 +3090,11 @@ pub fn perform_command(game: &mut Game<'_>, player: &crate::game::native_server:
 
 /// `native_perform_console_command`: `/jade` on a server's console.
 pub fn perform_console_command(game: &mut Game<'_>, command: &str, ran: &mut bool) {
+    let all: Vec<&str> = command.split_whitespace().collect();
+    if rule_command(game, 0, &all, 4) {
+        *ran = true;
+        return;
+    }
     let mut words = command.split_whitespace();
     if words.next() == Some("jade") {
         *ran = true;
@@ -3079,10 +3104,13 @@ pub fn perform_console_command(game: &mut Game<'_>, command: &str, ran: &mut boo
 }
 
 pub fn register_commands(commands: &mut Vec<crate::game::native_server::NativeCommand>) {
-    for syntax in ["jade show <targets:player>", "jade hide <targets:player>"] {
+    for syntax in ["jade show <targets:player>", "jade hide <targets:player>", "gamerule jade:max_position_deviation [value:integer]"] {
         commands.push(crate::game::native_server::NativeCommand::op(syntax, 2));
     }
 }
+
+const RULE_NAME: &str = "jade:max_position_deviation";
+const RULE_DEFAULT: i32 = 21;
 
 /// One step of an option's cycle (CycleButton, Shift going back): the theme's and style's over the themes there are, a
 /// value between the presets (a slider's, a dragged position) on to the next one up.
@@ -3841,7 +3869,7 @@ fn out_of_reach(game: &Game<'_>, player: u128, at: [f64; 3], base: f64) -> bool 
     if p.dimension != game.dim.id() {
         return true;
     }
-    let most = base + f64::from(game.ui.rules.int(horizon_client::gamerules::hz_jade_rule::NAME));
+    let most = base + f64::from(RULE.get());
     (0..3).map(|i| (p.position[i].floor() - at[i].floor()).powi(2)).sum::<f64>() > most * most
 }
 
@@ -4088,28 +4116,59 @@ pub fn from_server(channel: &str, data: &[u8]) {
 
 thread_local! {
     /// The world's game rules were just read, and this thread's next opened level brings ours in.
-    static RULE_OPENING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Jade.MAX_POSITION_DEVIATION in the world in play.
+    static RULE: std::cell::Cell<i32> = const { std::cell::Cell::new(RULE_DEFAULT) };
 }
 
-/// `load_world_state`: Horizon reads the rules from game_rules.dat, which has only vanilla's.
-pub fn rule_world_opening() {
-    RULE_OPENING.set(true);
-}
-
-/// Jade.MAX_POSITION_DEVIATION from data/jade/game_rules.dat (Java keeps it in game_rules.dat, whose file Horizon writes
-/// for vanilla alone), right after the world's rules were read. Else what Create New World chose, else the old setting.
-pub fn rule_level_opened(game: &mut Game<'_>) {
-    if !RULE_OPENING.replace(false) {
-        return;
-    }
-    use horizon_client::gamerules::{Value, hz_jade_rule::NAME};
+/// `native_world_lifecycle`, a world opened: Jade.MAX_POSITION_DEVIATION from data/jade/game_rules.dat (Java keeps it in
+/// game_rules.dat, whose file Horizon writes for vanilla alone), else its default.
+pub fn rule_world_open(game: &mut Game<'_>) {
     use horizon_world::nbt::Tag;
     let saved = horizon_client::save::read_dat(&game.world_root.join("data/jade/game_rules.dat"));
-    let value = match saved.as_ref().and_then(|t| t.get("data")).and_then(|d| d.get(NAME)) {
-        Some(Tag::Int(v)) => Some(*v),
-        _ => game.level.game_rules.get(NAME).copied().or_else(|| game.native_setting(ID, "max_position_deviation").and_then(|v| v.parse().ok())),
+    let value = match saved.as_ref().and_then(|t| t.get("data")).and_then(|d| d.get(RULE_NAME)) {
+        Some(Tag::Int(v)) => *v,
+        _ => game.native_setting(ID, "max_position_deviation").and_then(|v| v.parse().ok()).unwrap_or(RULE_DEFAULT),
     };
-    if let Some(value) = value {
-        game.ui.rules.set(NAME, Value::Int(value));
+    RULE.set(value.clamp(0, 1000));
+}
+
+/// `/gamerule jade:max_position_deviation [value]`, Jade.registerGameRules' rule (an integer, 21, 0 to 1000). True when
+/// `words` is that command. No mod can add a game rule to Horizon's table: its row isn't on the Game Rules screen.
+fn rule_command(game: &mut Game<'_>, from: u128, words: &[&str], permission: u8) -> bool {
+    let ["gamerule", name, rest @ ..] = words else { return false };
+    if name.strip_prefix("minecraft:").unwrap_or(name) != RULE_NAME {
+        return false;
     }
+    let tell = |game: &mut Game<'_>, t: &str| {
+        if from == 0 {
+            game.native_feedback(horizon_client::text::Text::legacy(t));
+        } else {
+            game.native_tell(from, horizon_client::text::Text::legacy(t));
+        }
+    };
+    if permission < 2 {
+        tell(game, &tr("commands.help.failed", "Unknown command or insufficient permissions"));
+        return true;
+    }
+    match rest {
+        [] => tell(game, &trf("commands.gamerule.query", "Game rule %s is currently set to: %s", &[RULE_NAME, &RULE.get().to_string()])),
+        [value] => match value.parse::<i32>() {
+            Ok(v) if (0..=1000).contains(&v) => {
+                if v == RULE.get() {
+                    tell(game, &trf("commands.gamerule.not_set", "Game rule %s was already set to: %s", &[RULE_NAME, value]));
+                    return true;
+                }
+                RULE.set(v);
+                use horizon_world::nbt::Tag;
+                // Its own file: "an unknown key makes [vanilla] reject" game_rules.dat.
+                let data = Tag::compound([(RULE_NAME, Tag::Int(v))]);
+                let tag = Tag::compound([("data", data), ("DataVersion", Tag::Int(horizon_core::version::DATA_VERSION))]);
+                let _ = horizon_client::save::write_dat(&game.world_root.join("data/jade/game_rules.dat"), tag);
+                tell(game, &trf("commands.gamerule.set", "Game rule %s is now set to: %s", &[RULE_NAME, value]));
+            }
+            _ => tell(game, "\u{a7}cThe value must be a whole number from 0 to 1000"),
+        },
+        _ => tell(game, "/gamerule jade:max_position_deviation [0-1000]"),
+    }
+    true
 }

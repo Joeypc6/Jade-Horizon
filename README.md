@@ -28,7 +28,7 @@ for the Horizon commit named below and needs no other mod.
 ## Build
 
 This is a [Horizon](https://github.com/horizon-rust/horizon) native mod bundle: Rust mixins compiled into the game.
-It was built and tested on Horizon commit `6475f62` (Minecraft 26.3, native hooks API 359), as `native-6475f62-9132faf6f134`.
+It was last tested on Horizon commit `6560641` (Minecraft 26.3, native hooks API 411), with AE2, JEI, Elevator, Iron Furnaces and Zoom.
 Native mods are unsandboxed code that runs with your rights, so read what you build.
 
 Put each bundle's `mixins/<id>` folder in one folder, then:
@@ -40,7 +40,7 @@ horizon-launcher native-build "path/to/that/folder" --trust-native-code
 ## Status
 
 An unofficial port, not made or endorsed by the original authors. Please report problems here, not to them.
-It was tested on Windows, in single player, on LAN with one guest, and on a dedicated server with one client. Other platforms were not tested.
+It was tested on Windows, in single player and on LAN with one guest; this version not on a dedicated server. Other platforms were not tested.
 A Horizon update can break it until it is rebuilt: it is built for the one Horizon commit named under Build.
 
 ## Credits and licence
