@@ -29,6 +29,8 @@ for the Horizon commit named below and needs no other mod.
 
 This is a [Horizon](https://github.com/horizon-rust/horizon) native mod bundle: Rust mixins compiled into the game.
 It was last tested on Horizon commit `6560641` (Minecraft 26.3, native hooks API 411), with AE2, JEI, Elevator, Iron Furnaces and Zoom.
+It also builds on Horizon commit `fdc87ae` (Nightly 2026-11-08), together with AE2, JEI, Elevator, Iron Furnaces, Hostile Neural
+Networks, Tinkers' Construct, Ender IO, Powah and Apothic Spawners (`native-fdc87ae-83d10460ef68`, all ten with none left out).
 Native mods are unsandboxed code that runs with your rights, so read what you build.
 
 Put each bundle's `mixins/<id>` folder in one folder, then:
